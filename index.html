@@ -389,7 +389,7 @@ tbody tr:hover{background:var(--panel2)}
   </section>
 
   <div class="foot">
-    模拟交易所 · Paper Exchange — 仅用于界面与流程演示<br>
+    模拟交易所 · Paper Exchange — 仅用于界面与流程演示 · build <span id="buildVer">20261029-4</span><br>
     不构成投资建议，不涉及真实资金、真实交易、真实收益
   </div>
 </div>
@@ -1905,10 +1905,16 @@ document.getElementById("plans").addEventListener("click", e=>{
 });
 
 document.getElementById("btnAddFunds").addEventListener("click", ()=>{
+  load();                    // 先读最新存档，防止覆盖其他标签页的改动
   state.usdt += 1000;
   state.deposited += 1000;   // 充值计入净投入，不被算成盈利
   save(); renderAll();
-  toast("已模拟充值 +1,000 USDT", "ok");
+  toast("已模拟充值 +1,000 USDT（已计入净投入）", "ok");
+});
+
+// 跨标签页同步：别的标签写入存档时，本页立即拉取最新状态，避免旧数据互相覆盖
+window.addEventListener("storage", e=>{
+  if(e.key === STORE_KEY){ load(); renderAll(); }
 });
 
 document.getElementById("btnReset").addEventListener("click", ()=>{
