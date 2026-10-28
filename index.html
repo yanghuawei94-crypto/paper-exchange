@@ -318,7 +318,7 @@ tbody tr:hover{background:var(--panel2)}
     <div class="card" style="margin-bottom:12px">
       <h3>盈亏走势 <span class="mid" style="font-weight:400">总资产估值 · 跟随行情刷新采样 · 保留最近 1000 点</span></h3>
       <div class="grid g4" style="margin-bottom:10px">
-        <div><div class="sub">累计盈亏（对净投入）</div><div class="kpi sm" id="pnlTotal">—</div></div>
+        <div><div class="sub" id="pnlBaseSub">累计盈亏（对净投入）</div><div class="kpi sm" id="pnlTotal">—</div></div>
         <div><div class="sub">盈亏率</div><div class="kpi sm" id="pnlPct">—</div></div>
         <div><div class="sub">区间最高</div><div class="kpi sm" id="pnlHigh">—</div></div>
         <div><div class="sub">区间最低</div><div class="kpi sm" id="pnlLow">—</div></div>
@@ -1359,6 +1359,7 @@ function renderAssets(){
   };
   setPnl("pnlTotal", (pnl>=0?"+":"") + fmt(pnl,2) + " USDT", pnl>0?"up":pnl<0?"down":"mid");
   setPnl("pnlPct",   (pnl>=0?"+":"") + fmt(pnl/base*100,2) + "%", pnl>0?"up":pnl<0?"down":"mid");
+  document.getElementById("pnlBaseSub").textContent = "累计盈亏（净投入 " + fmt(base,0) + "）";   // 净投入直接显示出来，充值后可见变化
   if(state.hist.length){
     const vs = state.hist.map(p=>p.v);
     setPnl("pnlHigh", fmt(Math.max(...vs),2), "mid");
