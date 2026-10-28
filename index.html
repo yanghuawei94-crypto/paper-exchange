@@ -316,6 +316,16 @@ tbody tr:hover{background:var(--panel2)}
       <div class="card"><h3>理财中（USDT 估值）</h3><div class="kpi" id="aEarn">—</div></div>
     </div>
     <div class="card" style="margin-bottom:12px">
+      <h3>盈亏走势 <span class="mid" style="font-weight:400">总资产估值 · 跟随行情刷新采样 · 保留最近 1000 点</span></h3>
+      <div class="grid g4" style="margin-bottom:10px">
+        <div><div class="sub">累计盈亏（对净投入）</div><div class="kpi sm" id="pnlTotal">—</div></div>
+        <div><div class="sub">盈亏率</div><div class="kpi sm" id="pnlPct">—</div></div>
+        <div><div class="sub">区间最高</div><div class="kpi sm" id="pnlHigh">—</div></div>
+        <div><div class="sub">区间最低</div><div class="kpi sm" id="pnlLow">—</div></div>
+      </div>
+      <div class="chart-box" style="height:200px"><canvas id="pnlCanvas"></canvas></div>
+    </div>
+    <div class="card" style="margin-bottom:12px">
       <h3>资产分布</h3>
       <div id="allocBars"></div>
     </div>
@@ -434,6 +444,8 @@ function defaultState(){
     openOrders: [],     // 限价委托 {id, t, base, side, qty, price, amount, fee, cost}
     earns: [],          // {id, productId, base, qty, apy, startAt, days}
     member: { tier:"FREE", expireAt:0 },
+    hist: [],           // 总资产采样点 {t, v}，盈亏走势图用
+    deposited: 0,       // 「模拟充值」累计额，算盈亏时从总资产里扣除（充值不算盈利）
     createdAt: Date.now(),
   };
 }
@@ -456,6 +468,9 @@ function load(){
   if(!Array.isArray(state.earns)) state.earns = [];
   if(!state.member || !TIERS[state.member.tier]) state.member = { tier:"FREE", expireAt:0 };
   if(typeof state.member.expireAt !== "number" || !isFinite(state.member.expireAt)) state.member.expireAt = 0;
+  if(!Array.isArray(state.hist)) state.hist = [];
+  state.hist = state.hist.filter(p => p && typeof p.t === "number" && typeof p.v === "number" && isFinite(p.v) && p.v >= 0);
+  if(typeof state.deposited !== "number" || !isFinite(state.deposited) || state.deposited < 0) state.deposited = 0;
 }
 
 function save(){
@@ -538,6 +553,20 @@ function totalPnl(){
     pnl += (priceOf(c.base) - h.cost) * h.qty;
   }
   return pnl;
+}
+// 净投入 = 初始本金 + 模拟充值累计；盈亏以它为基准，充值不算赚
+function netInvested(){ return START_USDT + state.deposited; }
+
+/* ---------- 盈亏走势：总资产采样 ---------- */
+const HIST_MAX = 1000;        // 采样点上限，FIFO 淘汰
+const HIST_GAP = 10000;       // 距上一点不足 10 秒不重复记录（同一次刷新只留一个点）
+function recordHist(){
+  const last = state.hist[state.hist.length - 1];
+  const now = Date.now();
+  if(last && now - last.t < HIST_GAP) return;
+  state.hist.push({ t: now, v: totalAssets() });
+  if(state.hist.length > HIST_MAX) state.hist.shift();
+  save();
 }
 
 /* ---------- 行情拉取 ---------- */
@@ -1318,6 +1347,123 @@ function renderAssets(){
       <td class="${cls}">${(pnl>=0?"+":"")}${fmt(pnl,2)}</td>
     </tr>`;
   }).join("") : `<tr><td colspan="6" class="empty" style="text-align:center">暂无持仓</td></tr>`;
+
+  // 盈亏统计数字（对净投入口径：初始 10,000 + 模拟充值）
+  const base = netInvested();
+  const cur = totalAssets();
+  const pnl = cur - base;
+  const setPnl = (id, txt, cls)=>{
+    const el = document.getElementById(id);
+    el.textContent = txt;
+    el.className = "kpi sm " + cls;
+  };
+  setPnl("pnlTotal", (pnl>=0?"+":"") + fmt(pnl,2) + " USDT", pnl>0?"up":pnl<0?"down":"mid");
+  setPnl("pnlPct",   (pnl>=0?"+":"") + fmt(pnl/base*100,2) + "%", pnl>0?"up":pnl<0?"down":"mid");
+  if(state.hist.length){
+    const vs = state.hist.map(p=>p.v);
+    setPnl("pnlHigh", fmt(Math.max(...vs),2), "mid");
+    setPnl("pnlLow",  fmt(Math.min(...vs),2), "mid");
+  }else{
+    setPnl("pnlHigh", "—", "mid"); setPnl("pnlLow", "—", "mid");
+  }
+  drawPnl();
+}
+
+/* ---------- 盈亏走势图（Canvas，DPR 自适应） ---------- */
+let pnlHover = -1;      // hover 命中的采样点下标，-1 表示无
+function drawPnl(){
+  const cv = document.getElementById("pnlCanvas");
+  if(!cv) return;
+  const box = cv.parentElement;
+  const W = box.clientWidth, H = box.clientHeight;
+  if(W <= 0 || H <= 0) return;
+  const dpr = window.devicePixelRatio || 1;
+  cv.width = Math.round(W*dpr); cv.height = Math.round(H*dpr);
+  const g = cv.getContext("2d");
+  g.setTransform(dpr, 0, 0, dpr, 0, 0);
+  g.clearRect(0, 0, W, H);
+
+  const hist = state.hist;
+  if(hist.length < 2){
+    g.fillStyle = "#848e9c";
+    g.font = "12px sans-serif"; g.textAlign = "center";
+    g.fillText("数据采集中…每次行情刷新记录一个点，稍候出图", W/2, H/2);
+    return;
+  }
+
+  const base = netInvested();
+  const vs = hist.map(p=>p.v);
+  let lo = Math.min(...vs, base), hi = Math.max(...vs, base);
+  if(hi - lo < 1e-9){ hi += 1; lo -= 1; }   // 平直数据也能画出线
+  const padL = 8, padR = 64, padT = 12, padB = 22;
+  const cw = W - padL - padR, ch = H - padT - padB;
+  const x = i => padL + cw * i / (hist.length - 1);
+  const y = v => padT + ch * (1 - (v - lo) / (hi - lo));
+
+  // 网格 + 右侧刻度
+  g.strokeStyle = "rgba(43,49,57,.8)"; g.fillStyle = "#848e9c";
+  g.font = "10px sans-serif"; g.textAlign = "left";
+  for(let i = 0; i <= 3; i++){
+    const v = lo + (hi - lo) * i / 3, yy = y(v);
+    g.beginPath(); g.moveTo(padL, yy); g.lineTo(W - padR, yy); g.stroke();
+    g.fillText(fmt(v, 0), W - padR + 6, yy + 3);
+  }
+
+  // 净投入基准线（虚线）
+  const by = y(base);
+  g.save();
+  g.setLineDash([4,4]); g.strokeStyle = "#f0b90b";
+  g.beginPath(); g.moveTo(padL, by); g.lineTo(W - padR, by); g.stroke();
+  g.restore();
+  g.fillStyle = "#f0b90b"; g.textAlign = "right";
+  g.fillText("净投入", W - padR - 4, by - 4);
+
+  // 曲线 + 渐变面积：颜色按当前值相对净投入定红绿
+  const upNow = vs[vs.length-1] >= base;
+  const line = upNow ? "#0ecb81" : "#f6465d";
+  const grad = g.createLinearGradient(0, padT, 0, padT + ch);
+  grad.addColorStop(0, upNow ? "rgba(14,203,129,.25)" : "rgba(246,70,93,.25)");
+  grad.addColorStop(1, "rgba(0,0,0,0)");
+  g.beginPath();
+  hist.forEach((p,i)=> i ? g.lineTo(x(i), y(p.v)) : g.moveTo(x(0), y(p.v)));
+  g.strokeStyle = line; g.lineWidth = 1.6; g.stroke();
+  g.lineTo(x(hist.length-1), padT+ch); g.lineTo(x(0), padT+ch); g.closePath();
+  g.fillStyle = grad; g.fill();
+
+  // 最新点
+  const lx = x(hist.length-1), ly = y(vs[vs.length-1]);
+  g.beginPath(); g.arc(lx, ly, 3, 0, 7); g.fillStyle = line; g.fill();
+
+  // 底部时间标签：左 / 中 / 右
+  const fmtT = t => {
+    const d = new Date(t), p = n => String(n).padStart(2,"0");
+    return p(d.getHours()) + ":" + p(d.getMinutes());
+  };
+  g.fillStyle = "#848e9c"; g.textAlign = "left";
+  g.fillText(fmtT(hist[0].t), padL, H - 6);
+  g.textAlign = "center";
+  g.fillText(fmtT(hist[Math.floor(hist.length/2)].t), x(Math.floor(hist.length/2)), H - 6);
+  g.textAlign = "right";
+  g.fillText(fmtT(hist[hist.length-1].t), W - padR, H - 6);
+
+  // hover：竖线 + 圆点 + 数值标签
+  if(pnlHover >= 0 && pnlHover < hist.length){
+    const hx = x(pnlHover), hy = y(hist[pnlHover].v);
+    g.save();
+    g.setLineDash([3,3]); g.strokeStyle = "#848e9c";
+    g.beginPath(); g.moveTo(hx, padT); g.lineTo(hx, padT+ch); g.stroke();
+    g.restore();
+    g.beginPath(); g.arc(hx, hy, 3.5, 0, 7); g.fillStyle = "#f0b90b"; g.fill();
+    const label = fmt(hist[pnlHover].v, 2) + " · " + fmtT(hist[pnlHover].t);
+    g.font = "11px sans-serif";
+    const tw = g.measureText(label).width + 12;
+    let bx = hx + 8; if(bx + tw > W - padR) bx = hx - tw - 8;   // 靠右缘时翻到左侧
+    g.fillStyle = "#1e2329"; g.strokeStyle = "#2b3139";
+    g.fillRect(bx, padT + 4, tw, 20); g.strokeRect(bx, padT + 4, tw, 20);
+    g.fillStyle = "#eaecef"; g.textAlign = "left";
+    g.fillText(label, bx + 6, padT + 18);
+  }
+  cv._layout = { padL, padR, n: hist.length, W };   // 供 mousemove 换算下标
 }
 
 /* ---------- 渲染：收益 ---------- */
@@ -1410,6 +1556,7 @@ function renderOrders(){
 
 /* ---------- 总渲染 ---------- */
 function renderAll(){
+  recordHist();   // 行情/交易每次刷新都尝试采样（内部 10 秒节流）
   document.getElementById("topUsdt").textContent = fmt(state.usdt,2) + " USDT";
   renderMarket();
   renderTrade();
@@ -1663,7 +1810,22 @@ document.getElementById("indBtns").addEventListener("click", e=>{
 // 窗口尺寸变化时重绘（节流）
 window.addEventListener("resize", ()=>{
   clearTimeout(window._klineTimer);
-  window._klineTimer = setTimeout(drawKline, 150);
+  window._klineTimer = setTimeout(()=>{ drawKline(); drawPnl(); }, 150);
+});
+
+// 盈亏走势图 hover：按 x 坐标找最近采样点
+document.getElementById("pnlCanvas").addEventListener("mousemove", e=>{
+  const cv = e.currentTarget, L = cv._layout;
+  if(!L || L.n < 2) return;
+  const r = cv.getBoundingClientRect();
+  const mx = e.clientX - r.left;
+  const cw = L.W - L.padL - L.padR;
+  const i = Math.round((mx - L.padL) / cw * (L.n - 1));
+  const idx = Math.max(0, Math.min(L.n - 1, i));
+  if(idx !== pnlHover){ pnlHover = idx; drawPnl(); }
+});
+document.getElementById("pnlCanvas").addEventListener("mouseleave", ()=>{
+  if(pnlHover !== -1){ pnlHover = -1; drawPnl(); }
 });
 
 document.querySelectorAll(".side-tabs button").forEach(btn=>{
@@ -1743,6 +1905,7 @@ document.getElementById("plans").addEventListener("click", e=>{
 
 document.getElementById("btnAddFunds").addEventListener("click", ()=>{
   state.usdt += 1000;
+  state.deposited += 1000;   // 充值计入净投入，不被算成盈利
   save(); renderAll();
   toast("已模拟充值 +1,000 USDT", "ok");
 });
