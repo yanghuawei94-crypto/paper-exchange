@@ -180,6 +180,7 @@ tbody tr:hover{background:var(--panel2)}
     <button class="tab on" data-view="market">行情</button>
     <button class="tab" data-view="trade">交易</button>
     <button class="tab" data-view="assets">资产</button>
+    <button class="tab" data-view="orders">订单</button>
     <button class="tab" data-view="earn">收益</button>
     <button class="tab" data-view="member">会员</button>
   </div>
@@ -317,6 +318,17 @@ tbody tr:hover{background:var(--panel2)}
     </div>
   </section>
 
+  <!-- 订单 -->
+  <section id="view-orders" class="hidden">
+    <div class="card">
+      <h3>订单历史 <span class="mid" style="font-weight:400">全部市价单 · 最新在前 · 保留最近 200 条</span></h3>
+      <table>
+        <thead><tr><th>时间</th><th>交易对</th><th>方向</th><th>价格</th><th>数量</th><th>成交额</th><th>手续费</th></tr></thead>
+        <tbody id="ordersBody"></tbody>
+      </table>
+    </div>
+  </section>
+
   <!-- 收益 -->
   <section id="view-earn" class="hidden">
     <div class="card" style="margin-bottom:12px">
@@ -448,7 +460,11 @@ function fmtQty(n, base){
   const c = COINS.find(x => x.base === base);
   return fmt(n, c ? c.prec : 2);   // 非币种（如 USDT）按 2 位显示
 }
-function nowT(){ return new Date().toTimeString().slice(0,8); }
+function nowT(){
+  // 订单历史需要日期，资产页成交记录也顺带升级：MM-DD HH:MM:SS
+  const d = new Date(), p = n => String(n).padStart(2,"0");
+  return p(d.getMonth()+1) + "-" + p(d.getDate()) + " " + p(d.getHours()) + ":" + p(d.getMinutes()) + ":" + p(d.getSeconds());
+}
 function priceOf(base){
   if(base === "USDT") return 1;    // USDT 自身计价恒为 1
   return prices[base] || (COINS.find(c=>c.base===base)||{}).fallback || 0;
@@ -1197,12 +1213,31 @@ function renderMember(){
   }).join("");
 }
 
+/* ---------- 渲染：订单历史 ---------- */
+function renderOrders(){
+  const tb = document.getElementById("ordersBody");
+  const list = state.orders.slice().reverse();   // 最新在前
+  tb.innerHTML = list.length ? list.map(o=>{
+    const buy = o.side === "buy";
+    return `<tr>
+      <td class="mid" style="font-size:12px">${o.t}</td>
+      <td>${o.base}/USDT</td>
+      <td class="${buy?"up":"down"}">${buy?"买入":"卖出"}</td>
+      <td>${fmtPx(o.price)}</td>
+      <td>${fmtQty(o.qty, o.base)}</td>
+      <td>${typeof o.amount === "number" ? fmt(o.amount,2) : "—"}</td>
+      <td class="mid">${typeof o.fee === "number" ? fmt(o.fee,4) : "—"}</td>
+    </tr>`;
+  }).join("") : `<tr><td colspan="7" class="empty" style="text-align:center">暂无订单，去交易页下第一单</td></tr>`;
+}
+
 /* ---------- 总渲染 ---------- */
 function renderAll(){
   document.getElementById("topUsdt").textContent = fmt(state.usdt,2) + " USDT";
   renderMarket();
   renderTrade();
   renderAssets();
+  renderOrders();
   renderEarn();
   renderMember();
 }
@@ -1247,8 +1282,8 @@ function doTrade(){
     }
   }
 
-  state.orders.push({ t:nowT(), base:c.base, side, qty, price:p });
-  if(state.orders.length > 60) state.orders = state.orders.slice(-60);
+  state.orders.push({ t:nowT(), base:c.base, side, qty, price:p, amount, fee:feeAmt });
+  if(state.orders.length > 200) state.orders = state.orders.slice(-200);
 
   save();
   document.getElementById("tQty").value = "";
@@ -1323,8 +1358,9 @@ document.querySelectorAll(".tab").forEach(btn=>{
   btn.addEventListener("click", ()=>{
     const v = btn.dataset.view;
     document.querySelectorAll(".tab").forEach(b=>b.classList.toggle("on", b===btn));
-    ["market","trade","assets","earn","member"].forEach(name=>{
-      document.getElementById("view-"+name).classList.toggle("hidden", name!==v);
+    // 通用切换：按 data-view 匹配所有 view-* 区块，新增 tab 不用再改这里
+    document.querySelectorAll('section[id^="view-"]').forEach(sec=>{
+      sec.classList.toggle("hidden", sec.id !== "view-"+v);
     });
     if(v === "trade") drawKline();   // 画布在隐藏状态下宽度为 0，显示后需重绘
     window.scrollTo({ top:0, behavior:"smooth" });
