@@ -251,9 +251,14 @@ tbody tr:hover{background:var(--panel2)}
           <button class="sell" data-side="sell">卖出</button>
         </div>
 
+        <div class="tf" id="otypeBtns" style="margin-bottom:10px">
+          <button data-ot="market" class="on">市价</button>
+          <button data-ot="limit">限价</button>
+        </div>
+
         <div class="field">
           <label for="tPriceInput">价格（USDT）</label>
-          <div class="row"><input id="tPriceInput" type="text" inputmode="decimal" readonly><span class="unit">市价</span></div>
+          <div class="row"><input id="tPriceInput" type="text" inputmode="decimal" readonly><span class="unit" id="tPriceUnit">市价</span></div>
         </div>
 
         <div class="field">
@@ -288,6 +293,11 @@ tbody tr:hover{background:var(--panel2)}
         <table>
           <thead><tr><th>币种</th><th>数量</th><th>成本</th><th>浮盈亏</th></tr></thead>
           <tbody id="tradeHoldBody"></tbody>
+        </table>
+        <h3 style="margin-top:20px">当前委托 <span class="mid" style="font-weight:400;font-size:11px">限价单 · 触价自动成交</span></h3>
+        <table>
+          <thead><tr><th>时间</th><th>方向</th><th>数量</th><th>委托价</th><th></th></tr></thead>
+          <tbody id="openBody"></tbody>
         </table>
         <h3 style="margin-top:20px">最近成交</h3>
         <table>
@@ -325,9 +335,9 @@ tbody tr:hover{background:var(--panel2)}
   <!-- 订单 -->
   <section id="view-orders" class="hidden">
     <div class="card">
-      <h3>订单历史 <span class="mid" style="font-weight:400">全部市价单 · 最新在前 · 保留最近 200 条</span></h3>
+      <h3>订单历史 <span class="mid" style="font-weight:400">市价 + 限价 · 最新在前 · 保留最近 200 条</span></h3>
       <table>
-        <thead><tr><th>时间</th><th>交易对</th><th>方向</th><th>价格</th><th>数量</th><th>成交额</th><th>手续费</th></tr></thead>
+        <thead><tr><th>时间</th><th>交易对</th><th>方向</th><th>类型</th><th>价格</th><th>数量</th><th>成交额</th><th>手续费</th></tr></thead>
         <tbody id="ordersBody"></tbody>
       </table>
     </div>
@@ -414,12 +424,14 @@ let basePx = {};        // 离线模拟的基准价，用来算 24h 涨跌
 let priceSource = "fallback";
 let activePair = "BTC";
 let side = "buy";
+let otype = "market";   // 下单类型：市价 / 限价
 
 function defaultState(){
   return {
     usdt: START_USDT,
     holdings: {},       // base -> { qty, cost }
-    orders: [],         // {t, base, side, qty, price}
+    orders: [],         // {t, base, side, qty, price, amount, fee, kind}
+    openOrders: [],     // 限价委托 {id, t, base, side, qty, price, amount, fee, cost}
     earns: [],          // {id, productId, base, qty, apy, startAt, days}
     member: { tier:"FREE", expireAt:0 },
     createdAt: Date.now(),
@@ -440,6 +452,7 @@ function load(){
       || typeof h.cost !== "number" || !isFinite(h.cost)) delete state.holdings[b];
   }
   if(!Array.isArray(state.orders)) state.orders = [];
+  if(!Array.isArray(state.openOrders)) state.openOrders = [];
   if(!Array.isArray(state.earns)) state.earns = [];
   if(!state.member || !TIERS[state.member.tier]) state.member = { tier:"FREE", expireAt:0 };
   if(typeof state.member.expireAt !== "number" || !isFinite(state.member.expireAt)) state.member.expireAt = 0;
@@ -571,6 +584,7 @@ async function fetchPrices(){
       basePx = {};          // 切回实时行情后重置模拟基准价：下次再离线时，涨跌幅从最新价重新起算
       failCount = 0;
       renderAll();
+      checkOpenOrders();   // 价格更新后检查限价单是否触价
       return;
     }catch(e){
       // 当前源不可用，换下一个
@@ -593,6 +607,7 @@ async function fetchPrices(){
   }
   priceSource = "sim";
   renderAll();
+  checkOpenOrders();
 }
 
 /* ---------- K 线 ---------- */
@@ -1182,7 +1197,8 @@ function renderTrade(){
 
   document.getElementById("tPairName").textContent = c.base + "/" + c.quote;
   document.getElementById("tPrice").textContent = fmtPx(p);
-  document.getElementById("tPriceInput").value = fmtPx(p);
+  // 市价模式跟随最新价；限价模式保留用户输入，不在每次刷新时覆盖
+  if(otype === "market") document.getElementById("tPriceInput").value = fmtPx(p);
   document.getElementById("tBaseUnit").textContent = c.base;
 
   const chgEl = document.getElementById("tChange");
@@ -1219,6 +1235,16 @@ function renderTrade(){
     </tr>`;
   }).join("") : `<tr><td colspan="4" class="empty" style="text-align:center">暂无持仓，先去行情页买一点</td></tr>`;
 
+  // 当前委托（限价单）
+  const opb = document.getElementById("openBody");
+  opb.innerHTML = state.openOrders.length ? state.openOrders.map(o=>`<tr>
+      <td style="font-size:11.5px">${o.t}</td>
+      <td class="${o.side==="buy"?"up":"down"}">${o.side==="buy"?"买":"卖"}</td>
+      <td>${fmtQty(o.qty, o.base)} ${o.base}</td>
+      <td class="mid">${fmtPx(o.price)}</td>
+      <td><button class="trade-btn" data-cancel="${o.id}" style="padding:2px 8px;font-size:11px">撤销</button></td>
+    </tr>`).join("") : `<tr><td colspan="5" class="empty" style="text-align:center">暂无委托</td></tr>`;
+
   // 成交记录
   const ob = document.getElementById("orderBody");
   const list = state.orders.slice(-8).reverse();
@@ -1230,9 +1256,15 @@ function renderTrade(){
     </tr>`).join("") : `<tr><td colspan="4" class="empty" style="text-align:center">还没有成交</td></tr>`;
 }
 
+function orderPrice(c){
+  // 限价模式用输入框的委托价，市价模式用最新价
+  if(otype !== "limit") return priceOf(c.base);
+  return parseFloat((document.getElementById("tPriceInput").value || "").replace(/,/g,"")) || 0;
+}
+
 function updateTradeCalc(){
   const c = COINS.find(x => x.base === activePair) || COINS[0];
-  const p = priceOf(c.base);
+  const p = orderPrice(c);
   const qty = parseFloat(document.getElementById("tQty").value) || 0;
   const fee = tierInfo().fee;
   const amount = qty * p;
@@ -1367,12 +1399,13 @@ function renderOrders(){
       <td class="mid" style="font-size:12px">${o.t}</td>
       <td>${o.base}/USDT</td>
       <td class="${buy?"up":"down"}">${buy?"买入":"卖出"}</td>
+      <td class="mid">${o.kind === "limit" ? "限价" : "市价"}</td>
       <td>${fmtPx(o.price)}</td>
       <td>${fmtQty(o.qty, o.base)}</td>
       <td>${typeof o.amount === "number" ? fmt(o.amount,2) : "—"}</td>
       <td class="mid">${typeof o.fee === "number" ? fmt(o.fee,4) : "—"}</td>
     </tr>`;
-  }).join("") : `<tr><td colspan="7" class="empty" style="text-align:center">暂无订单，去交易页下第一单</td></tr>`;
+  }).join("") : `<tr><td colspan="8" class="empty" style="text-align:center">暂无订单，去交易页下第一单</td></tr>`;
 }
 
 /* ---------- 总渲染 ---------- */
@@ -1389,12 +1422,14 @@ function renderAll(){
 /* ---------- 交易动作 ---------- */
 function doTrade(){
   const c = COINS.find(x => x.base === activePair) || COINS[0];
-  const p = priceOf(c.base);
+  const p = orderPrice(c);
   const qty = parseFloat(document.getElementById("tQty").value) || 0;
   const fee = tierInfo().fee;
 
   if(qty <= 0){ toast("请输入数量", "err"); return; }
-  if(p <= 0){ toast("价格不可用", "err"); return; }
+  if(p <= 0){ toast(otype === "limit" ? "请输入委托价" : "价格不可用", "err"); return; }
+
+  if(otype === "limit"){ placeLimitOrder(c, qty, p); return; }
 
   const amount = qty * p;
   const feeAmt = amount * fee;
@@ -1426,13 +1461,98 @@ function doTrade(){
     }
   }
 
-  state.orders.push({ t:nowT(), base:c.base, side, qty, price:p, amount, fee:feeAmt });
+  state.orders.push({ t:nowT(), base:c.base, side, qty, price:p, amount, fee:feeAmt, kind:"market" });
   if(state.orders.length > 200) state.orders = state.orders.slice(-200);
 
   save();
   document.getElementById("tQty").value = "";
   renderAll();
   toast((side==="buy"?"买入 ":"卖出 ") + fmtQty(qty, c.base) + " " + c.base + " 已成交", "ok");
+}
+
+/* ---------- 限价单 ---------- */
+// 委托即冻结资产：买单冻结 USDT（金额+手续费），卖单冻结币（记录冻结时成本，撤单并回）
+function placeLimitOrder(c, qty, lp){
+  const fee = tierInfo().fee;
+  const amount = qty * lp, feeAmt = amount * fee;
+  const o = { id: Date.now() + "" + Math.floor(Math.random()*1e4),
+              t: nowT(), base: c.base, side, qty, price: lp, amount, fee: feeAmt };
+  if(side === "buy"){
+    if(state.usdt < amount + feeAmt){
+      toast("USDT 不足，需要 " + fmt(amount+feeAmt,2), "err"); return;
+    }
+    state.usdt -= amount + feeAmt;
+  }else{
+    const have = holdQty(c.base);
+    if(have < qty){
+      const maxSell = Math.floor(have * 10 ** c.prec) / 10 ** c.prec;
+      toast("持仓不足，最多可卖 " + maxSell.toFixed(c.prec), "err"); return;
+    }
+    const h = state.holdings[c.base];
+    o.cost = h.cost;                    // 冻结部分的平均成本，撤单时并回持仓
+    h.qty -= qty;
+    if(h.qty * 10 ** c.prec < 1) delete state.holdings[c.base];   // 全部冻结
+  }
+  state.openOrders.push(o);
+  save();
+  document.getElementById("tQty").value = "";
+  renderAll();
+  toast("限价单已委托：" + (side==="buy"?"买入":"卖出") + " " + fmtQty(qty,c.base) + " " + c.base + " @ " + fmtPx(lp), "ok");
+  checkOpenOrders();   // 委托价已触及现价时立即成交
+}
+
+// 触价成交：买单 现价≤委托价，卖单 现价≥委托价；按委托价成交
+function checkOpenOrders(){
+  if(!state.openOrders.length) return;
+  const filled = [];
+  state.openOrders = state.openOrders.filter(o => {
+    const p = priceOf(o.base);
+    if(p <= 0) return true;
+    const hit = o.side === "buy" ? p <= o.price : p >= o.price;
+    if(hit) filled.push(o);
+    return !hit;
+  });
+  if(!filled.length) return;
+  for(const o of filled){
+    if(o.side === "buy"){
+      // 手续费委托时已扣，直接按委托价成本加持仓
+      const h = state.holdings[o.base] || { qty:0, cost:0 };
+      const newQty = h.qty + o.qty;
+      const newCost = newQty > 0 ? ((h.qty*h.cost) + o.amount + o.fee) / newQty : o.price;
+      state.holdings[o.base] = { qty:newQty, cost:newCost };
+    }else{
+      state.usdt += o.amount - o.fee;
+    }
+    state.orders.push({ t: nowT(), base: o.base, side: o.side, qty: o.qty,
+                        price: o.price, amount: o.amount, fee: o.fee, kind: "limit" });
+    toast("限价单成交：" + (o.side==="buy"?"买入":"卖出") + " " + fmtQty(o.qty,o.base) + " " + o.base + " @ " + fmtPx(o.price), "ok");
+  }
+  if(state.orders.length > 200) state.orders = state.orders.slice(-200);
+  save();
+  renderAll();
+}
+
+function cancelOrder(id){
+  const i = state.openOrders.findIndex(o => o.id === id);
+  if(i < 0) return;
+  const o = state.openOrders[i];
+  state.openOrders.splice(i, 1);
+  if(o.side === "buy"){
+    state.usdt += o.amount + o.fee;   // 退回冻结的 USDT
+  }else{
+    // 冻结的币按冻结时成本并回持仓
+    const h = state.holdings[o.base];
+    if(h){
+      const newQty = h.qty + o.qty;
+      h.cost = (h.qty*h.cost + o.qty*o.cost) / newQty;
+      h.qty = newQty;
+    }else{
+      state.holdings[o.base] = { qty:o.qty, cost:o.cost };
+    }
+  }
+  save();
+  renderAll();
+  toast("已撤单", "ok");
 }
 
 /* ---------- 理财动作 ---------- */
@@ -1560,7 +1680,7 @@ document.getElementById("tQty").addEventListener("input", updateTradeCalc);
 document.querySelectorAll(".pcts button").forEach(btn=>{
   btn.addEventListener("click", ()=>{
     const c = COINS.find(x => x.base === activePair) || COINS[0];
-    const p = priceOf(c.base);
+    const p = orderPrice(c);   // 限价模式下按委托价折算百分比数量
     const pct = parseFloat(btn.dataset.pct);
     const fee = tierInfo().fee;
     let qty = 0;
@@ -1578,6 +1698,33 @@ document.querySelectorAll(".pcts button").forEach(btn=>{
 });
 
 document.getElementById("tSubmit").addEventListener("click", doTrade);
+
+// 市价/限价切换：限价时价格框可编辑并预填现价，市价时恢复只读跟随最新价
+document.getElementById("otypeBtns").addEventListener("click", e=>{
+  const b = e.target.closest("[data-ot]");
+  if(!b || b.dataset.ot === otype) return;
+  otype = b.dataset.ot;
+  document.querySelectorAll("#otypeBtns button").forEach(x=>x.classList.toggle("on", x===b));
+  const inp = document.getElementById("tPriceInput");
+  const c = COINS.find(x => x.base === activePair) || COINS[0];
+  if(otype === "limit"){
+    inp.removeAttribute("readonly");
+    inp.value = priceOf(c.base);                          // 预填现价，用户可改
+    document.getElementById("tPriceUnit").textContent = "限价";
+  }else{
+    inp.setAttribute("readonly", "");
+    document.getElementById("tPriceUnit").textContent = "市价";
+    renderTrade();
+  }
+  updateTradeCalc();
+});
+document.getElementById("tPriceInput").addEventListener("input", updateTradeCalc);
+
+// 撤销限价委托
+document.getElementById("openBody").addEventListener("click", e=>{
+  const b = e.target.closest("[data-cancel]");
+  if(b) cancelOrder(b.dataset.cancel);
+});
 
 document.getElementById("earnProducts").addEventListener("click", e=>{
   const b = e.target.closest("[data-earn]");
