@@ -226,6 +226,10 @@ tbody tr:hover{background:var(--panel2)}
           <button data-tf="4h">4h</button>
           <button data-tf="1d">1d</button>
         </div>
+        <div class="tf" id="indBtns">
+          <button data-ind="macd" class="on">MACD</button>
+          <button data-ind="rsi">RSI</button>
+        </div>
       </div>
       <div class="chart-box"><canvas id="klineCanvas"></canvas></div>
     </div>
@@ -599,6 +603,9 @@ let klineTf = "1m";
 let klineSrc = "";
 let kBase = null;      // 底图缓存（十字光标叠加用）
 let kLayout = null;    // 图表布局参数缓存
+let kShowMACD = window.innerWidth > 760;   // 窄屏默认关子图，保住主图高度
+let kShowRSI = false;
+let kInd = null;       // 全量指标缓存 {dif, dea, bar, r6, r12, r24}，按 klines 绝对下标对齐
 let kReqSeq = 0;       // 请求序号：并发时只接受最后一次发起的结果
 
 async function fetchKlines(resetView){
@@ -665,6 +672,42 @@ function ma(arr, n){
   return out;
 }
 
+/* ---------- 指标计算：EMA / MACD / RSI ---------- */
+function ema(arr, n){
+  const out = new Array(arr.length).fill(null);
+  const k = 2 / (n + 1);
+  let prev = null;
+  for(let i = 0; i < arr.length; i++){
+    prev = prev === null ? arr[i] : arr[i] * k + prev * (1 - k);
+    out[i] = prev;
+  }
+  return out;
+}
+function macdOf(closes){
+  const e12 = ema(closes, 12), e26 = ema(closes, 26);
+  const dif = closes.map((_, i) => e12[i] - e26[i]);
+  const dea = ema(dif, 9);
+  const bar = dif.map((d, i) => (d - dea[i]) * 2);   // 国内习惯：MACD 柱 = 2×(DIF−DEA)
+  return { dif, dea, bar };
+}
+function rsiOf(closes, n){
+  // Wilder 平滑 RSI，首段用简单平均打底
+  const out = new Array(closes.length).fill(null);
+  let avgG = 0, avgL = 0;
+  for(let i = 1; i < closes.length; i++){
+    const chg = closes[i] - closes[i-1];
+    const g = Math.max(chg, 0), l = Math.max(-chg, 0);
+    if(i <= n){
+      avgG += g/n; avgL += l/n;
+      if(i === n) out[i] = avgL === 0 ? 100 : 100 - 100/(1 + avgG/avgL);
+    }else{
+      avgG = (avgG*(n-1) + g)/n; avgL = (avgL*(n-1) + l)/n;
+      out[i] = avgL === 0 ? 100 : 100 - 100/(1 + avgG/avgL);
+    }
+  }
+  return out;
+}
+
 // 可视窗口：kZoom 表示画多少根，kOffset 表示距最新一根往历史方向偏移多少根
 let kZoom = 120, kOffset = 0;
 let kDrag = null;      // 拖拽状态
@@ -694,10 +737,16 @@ function drawKline(){
   const padL = 4, padR = 78, padT = 8, padB = 20;
   const cw = W - padL - padR;
   const ch = H - padT - padB;
-  const volH = Math.round(ch * 0.18);
-  const priceH = ch - volH - 8;
+  // 子图布局：成交量常驻，MACD/RSI 按开关增减，主图拿剩余高度
+  const gap = 8;
+  const volH  = Math.round(ch * 0.13);
+  const macdH = kShowMACD ? Math.round(ch * 0.15) : 0;
+  const rsiH  = kShowRSI  ? Math.round(ch * 0.15) : 0;
+  const priceH = ch - volH - macdH - rsiH - gap * (1 + (macdH ? 1 : 0) + (rsiH ? 1 : 0));
   const priceTop = padT, priceBottom = padT + priceH;
-  const volTop = priceBottom + 8;
+  const volTop = priceBottom + gap;
+  const macdTop = volTop + volH + gap;
+  const rsiTop = (kShowMACD ? macdTop + macdH : volTop + volH) + gap;
 
   let hi = -Infinity, lo = Infinity, vmax = 0;
   for(const k of vis){
@@ -762,18 +811,100 @@ function drawKline(){
     g.globalAlpha = 1;
   });
 
-  // 均线 MA7（黄）/ MA25（紫）
-  const closes = vis.map(k => k.c);
-  [[ma(closes, 7), "#f0b90b"], [ma(closes, 25), "#c084fc"]].forEach(([arr, color]) => {
+  // 均线 MA7（黄）/ MA25（紫）：在全量数据上算，平移到历史区间也不断线
+  const allCloses = klines.map(k => k.c);
+  [[ma(allCloses, 7), "#f0b90b"], [ma(allCloses, 25), "#c084fc"]].forEach(([arr, color]) => {
     g.strokeStyle = color; g.lineWidth = 1.4; g.beginPath();
     let started = false;
-    arr.forEach((v, i) => {
+    vis.forEach((_, i) => {
+      const v = arr[start + i];
       if(v === null) return;
       const x = padL + slot * (i + 0.5), y = yOf(v);
       if(!started){ g.moveTo(x, y); started = true; } else g.lineTo(x, y);
     });
     g.stroke();
   });
+
+  // 指标全量计算，十字光标悬停时按绝对下标取值
+  kInd = null;
+  if(kShowMACD || kShowRSI){
+    kInd = {};
+    if(kShowMACD) Object.assign(kInd, macdOf(allCloses));
+    if(kShowRSI){ kInd.r6 = rsiOf(allCloses, 6); kInd.r12 = rsiOf(allCloses, 12); kInd.r24 = rsiOf(allCloses, 24); }
+  }
+
+  // 子图分隔线 + 面板名
+  g.font = "10px ui-monospace,Menlo,monospace";
+  [volTop, kShowMACD && macdTop, kShowRSI && rsiTop].filter(Boolean).forEach(y => {
+    g.strokeStyle = "rgba(43,49,57,.5)";
+    g.beginPath(); g.moveTo(padL, y - 4); g.lineTo(padL + cw, y - 4); g.stroke();
+  });
+  g.fillStyle = "#848e9c"; g.textAlign = "left"; g.textBaseline = "middle";
+  g.fillText("VOL", padL + 4, volTop + 9);
+
+  // MACD 子图：柱（绿正红负）+ DIF（黄）+ DEA（紫）
+  if(kShowMACD && kInd){
+    let mHi = -Infinity, mLo = Infinity;
+    for(let i = 0; i < vis.length; i++){
+      const idx = start + i;
+      for(const v of [kInd.dif[idx], kInd.dea[idx], kInd.bar[idx]]){
+        if(v > mHi) mHi = v;
+        if(v < mLo) mLo = v;
+      }
+    }
+    if(mHi === mLo){ mHi += 1; mLo -= 1; }
+    const myOf = v => macdTop + macdH - (v - mLo) / (mHi - mLo) * macdH;
+    // 零轴
+    g.strokeStyle = "rgba(43,49,57,.9)";
+    g.beginPath(); g.moveTo(padL, myOf(0)); g.lineTo(padL + cw, myOf(0)); g.stroke();
+    // 柱
+    vis.forEach((_, i) => {
+      const b = kInd.bar[start + i];
+      const y0 = myOf(0), y1 = myOf(b);
+      g.fillStyle = b >= 0 ? "#0ecb81" : "#f6465d";
+      g.globalAlpha = 0.8;
+      g.fillRect(padL + slot * (i + 0.5) - bodyW/2, Math.min(y0, y1), bodyW, Math.max(1, Math.abs(y1 - y0)));
+      g.globalAlpha = 1;
+    });
+    // DIF / DEA
+    [[kInd.dif, "#f0b90b"], [kInd.dea, "#c084fc"]].forEach(([arr, color]) => {
+      g.strokeStyle = color; g.lineWidth = 1.2; g.beginPath();
+      vis.forEach((_, i) => {
+        const x = padL + slot * (i + 0.5), y = myOf(arr[start + i]);
+        i === 0 ? g.moveTo(x, y) : g.lineTo(x, y);
+      });
+      g.stroke();
+    });
+    g.fillStyle = "#848e9c"; g.textAlign = "left";
+    g.fillText("MACD 12·26·9", padL + 4, macdTop + 9);
+    g.fillText(fmt(mHi, 2), padL + cw + 6, macdTop + 4);
+    g.fillText(fmt(mLo, 2), padL + cw + 6, macdTop + macdH - 2);
+  }
+
+  // RSI 子图：固定 0-100 量程，70/30 超买超卖虚线
+  if(kShowRSI && kInd){
+    const ryOf = v => rsiTop + rsiH - (v / 100) * rsiH;
+    [70, 30].forEach(lv => {
+      g.strokeStyle = "rgba(43,49,57,.9)"; g.setLineDash([3, 3]);
+      g.beginPath(); g.moveTo(padL, ryOf(lv)); g.lineTo(padL + cw, ryOf(lv)); g.stroke();
+      g.setLineDash([]);
+      g.fillStyle = "#848e9c"; g.textAlign = "left";
+      g.fillText(String(lv), padL + cw + 6, ryOf(lv));
+    });
+    [[kInd.r6, "#f0b90b"], [kInd.r12, "#c084fc"], [kInd.r24, "#5b8af0"]].forEach(([arr, color]) => {
+      g.strokeStyle = color; g.lineWidth = 1.2; g.beginPath();
+      let started = false;
+      vis.forEach((_, i) => {
+        const v = arr[start + i];
+        if(v === null) return;
+        const x = padL + slot * (i + 0.5), y = ryOf(v);
+        if(!started){ g.moveTo(x, y); started = true; } else g.lineTo(x, y);
+      });
+      g.stroke();
+    });
+    g.fillStyle = "#848e9c"; g.textAlign = "left";
+    g.fillText("RSI 6·12·24", padL + 4, rsiTop + 9);
+  }
 
   // 最新价虚线（只在窗口包含最新一根时画）
   if(start + vis.length >= klines.length){
@@ -788,7 +919,8 @@ function drawKline(){
   kBase = document.createElement("canvas");
   kBase.width = cv.width; kBase.height = cv.height;
   kBase.getContext("2d").drawImage(cv, 0, 0);
-  kLayout = { W, H, padL, padR, padT, padB, cw, slot, priceTop, priceBottom, hi, lo, start, count: vis.length };
+  kLayout = { W, H, padL, padR, padT, padB, cw, slot, priceTop, priceBottom, hi, lo, start, count: vis.length,
+              chartBottom: kShowRSI ? rsiTop + rsiH : kShowMACD ? macdTop + macdH : volTop + volH };
 
   // 每 15 秒刷新数据后会重画底图；若鼠标仍停在图上，重绘十字光标，避免闪烁消失
   if(kMouse && kHover >= 0 && kHover >= start && kHover < start + vis.length){
@@ -843,7 +975,7 @@ function drawHover(idx, my){
   g.strokeStyle = "rgba(132,142,156,.6)";
   g.lineWidth = 1;
   g.setLineDash([3, 3]);
-  g.beginPath(); g.moveTo(x, yTop); g.lineTo(x, yBottom); g.stroke();
+  g.beginPath(); g.moveTo(x, yTop); g.lineTo(x, L.chartBottom || yBottom); g.stroke();
   g.beginPath(); g.moveTo(L.padL, y); g.lineTo(L.padL + L.cw, y); g.stroke();
   g.setLineDash([]);
 
@@ -867,6 +999,18 @@ function drawHover(idx, my){
     ["量", fmt(k.v, 2), "#848e9c"],
     ["涨跌", (chg >= 0 ? "+" : "") + fmt(chg, 2) + "%", chg >= 0 ? "#0ecb81" : "#f6465d"],
   ];
+  // 指标行：面板开着就在信息卡里带上对应数值
+  if(kInd && kInd.dif){
+    const b = kInd.bar[idx];
+    rows.push(["DIF", fmt(kInd.dif[idx], 3), "#f0b90b"]);
+    rows.push(["DEA", fmt(kInd.dea[idx], 3), "#c084fc"]);
+    rows.push(["MACD", fmt(b, 3), b >= 0 ? "#0ecb81" : "#f6465d"]);
+  }
+  if(kInd && kInd.r6 && kInd.r6[idx] !== null){
+    rows.push(["RSI6", fmt(kInd.r6[idx], 1), "#f0b90b"]);
+    if(kInd.r12[idx] !== null) rows.push(["RSI12", fmt(kInd.r12[idx], 1), "#c084fc"]);
+    if(kInd.r24[idx] !== null) rows.push(["RSI24", fmt(kInd.r24[idx], 1), "#5b8af0"]);
+  }
   const bw = 152, bh = rows.length * 17 + 16;
   let bx = x + 14;
   if(bx + bw > L.padL + L.cw) bx = x - 14 - bw;      // 靠右时翻到左侧
@@ -1383,6 +1527,17 @@ document.getElementById("tfBtns").addEventListener("click", e=>{
   klineTf = b.dataset.tf;
   document.querySelectorAll("#tfBtns button").forEach(x=>x.classList.toggle("on", x===b));
   fetchKlines(true);
+});
+
+// 指标开关：MACD / RSI 子图显隐
+document.querySelector('#indBtns [data-ind="macd"]').classList.toggle("on", kShowMACD);
+document.getElementById("indBtns").addEventListener("click", e=>{
+  const b = e.target.closest("button[data-ind]");
+  if(!b) return;
+  if(b.dataset.ind === "macd") kShowMACD = !kShowMACD;
+  else kShowRSI = !kShowRSI;
+  b.classList.toggle("on", b.dataset.ind === "macd" ? kShowMACD : kShowRSI);
+  drawKline();
 });
 
 // 窗口尺寸变化时重绘（节流）
