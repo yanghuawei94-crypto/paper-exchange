@@ -389,7 +389,7 @@ tbody tr:hover{background:var(--panel2)}
   </section>
 
   <div class="foot">
-    模拟交易所 · Paper Exchange — 仅用于界面与流程演示 · build <span id="buildVer">20261029-4</span><br>
+    模拟交易所 · Paper Exchange — 仅用于界面与流程演示 · build <span id="buildVer">20261029-5</span><br>
     不构成投资建议，不涉及真实资金、真实交易、真实收益
   </div>
 </div>
@@ -424,6 +424,7 @@ const EARN_PRODUCTS = [
 ];
 
 const STORE_KEY = "paper_exchange_v1";
+const DEP_KEY = "paper_exchange_deposited_v1";   // 净投入累计独立存储，防旧版标签页覆盖
 const START_USDT = 10000;
 
 /* ---------- 状态 ---------- */
@@ -470,11 +471,20 @@ function load(){
   if(typeof state.member.expireAt !== "number" || !isFinite(state.member.expireAt)) state.member.expireAt = 0;
   if(!Array.isArray(state.hist)) state.hist = [];
   state.hist = state.hist.filter(p => p && typeof p.t === "number" && typeof p.v === "number" && isFinite(p.v) && p.v >= 0);
-  if(typeof state.deposited !== "number" || !isFinite(state.deposited) || state.deposited < 0) state.deposited = 0;
+  // deposited 走独立键：旧版本标签页重写主存档时不会把这个字段抹掉
+  const depRaw = parseFloat(localStorage.getItem(DEP_KEY));
+  if(isFinite(depRaw) && depRaw >= 0){
+    state.deposited = depRaw;
+  }else if(typeof state.deposited === "number" && isFinite(state.deposited) && state.deposited > 0){
+    try{ localStorage.setItem(DEP_KEY, String(state.deposited)); }catch(e){}   // 首次升级：从主存档迁移
+  }else{
+    state.deposited = 0;
+  }
 }
 
 function save(){
   try{ localStorage.setItem(STORE_KEY, JSON.stringify(state)); }catch(e){}
+  try{ localStorage.setItem(DEP_KEY, String(state.deposited || 0)); }catch(e){}   // 独立键同步写，双保险
 }
 
 /* ---------- 工具 ---------- */
@@ -1920,6 +1930,7 @@ window.addEventListener("storage", e=>{
 document.getElementById("btnReset").addEventListener("click", ()=>{
   if(!confirm("重置全部数据？持仓、成交、理财、会员都会被清空，USDT 回到 10,000。")) return;
   localStorage.removeItem(STORE_KEY);
+  localStorage.removeItem(DEP_KEY);
   load();
   renderAll();
   toast("已重置", "ok");
