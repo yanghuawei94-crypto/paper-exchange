@@ -251,6 +251,11 @@ tbody tr:hover{background:var(--panel2)}
           <button data-ind="cci">CCI</button>
           <button data-ind="atr">ATR</button>
           <button data-ind="mtm">MTM</button>
+          <button data-ind="trix">TRIX</button>
+          <button data-ind="bias">BIAS</button>
+          <button data-ind="psy">PSY</button>
+          <button data-ind="roc">ROC</button>
+          <button data-ind="dma">DMA</button>
         </div>
       </div>
       <div class="chart-box"><canvas id="klineCanvas"></canvas></div>
@@ -576,7 +581,7 @@ tbody tr:hover{background:var(--panel2)}
   </section>
 
   <div class="foot">
-    模拟交易所 · Paper Exchange — 仅用于界面与流程演示 · build <span id="buildVer">20261029-18</span><br>
+    模拟交易所 · Paper Exchange — 仅用于界面与流程演示 · build <span id="buildVer">20261029-19</span><br>
     不构成投资建议，不涉及真实资金、真实交易、真实收益
   </div>
 </div>
@@ -947,6 +952,11 @@ let kShowDMI = false;
 let kShowCCI = false;
 let kShowATR = false;
 let kShowMTM = false;
+let kShowTRIX = false;
+let kShowBIAS = false;
+let kShowPSY  = false;
+let kShowROC  = false;
+let kShowDMA  = false;
 let kInd = null;       // 全量指标缓存 {dif, dea, bar, r6, r12, r24, boll, kdj}，按 klines 绝对下标对齐
 let kReqSeq = 0;       // 请求序号：并发时只接受最后一次发起的结果
 
@@ -1200,6 +1210,139 @@ function mtmOf(kl, n = 12, m = 6){
   return { mtm, signal };
 }
 
+// TRIX（三重指数平滑均线变化率，参数 12·9）：收盘价连做三次 EMA 后求变化率 ×100
+// 早期值受 EMA 种子影响，前 n 根置 null；信号线为 TRIX 的 9 日均线
+function trixOf(kl, n = 12, m = 9){
+  const len = kl.length;
+  const c = kl.map(k => k.c);
+  const e3 = ema(ema(ema(c, n), n), n);
+  const trix = new Array(len).fill(null);
+  for(let i = n; i < len; i++){
+    const prev = e3[i-1];
+    trix[i] = prev === 0 ? 0 : (e3[i] - prev) / prev * 100;
+  }
+  const signal = new Array(len).fill(null);
+  for(let i = n + m - 1; i < len; i++){
+    let s = 0;
+    for(let j = i - m + 1; j <= i; j++) s += trix[j];
+    signal[i] = s / m;
+  }
+  return { trix, signal };
+}
+
+// BIAS（乖离率，参数 6·12·24）：收盘价偏离 N 日均线的百分比，正 = 价在均线上方
+function biasOf(kl, ns = [6, 12, 24]){
+  const c = kl.map(k => k.c);
+  return ns.map(n => {
+    const m = ma(c, n);
+    return m.map((v, i) => (v === null || v === 0) ? null : (c[i] - v) / v * 100);
+  });
+}
+
+// PSY（心理线，参数 12·6）：N 根中上涨（收 > 开）的根数占比 ×100，范围 0~100
+function psyOf(kl, n = 12, m = 6){
+  const len = kl.length;
+  const psy = new Array(len).fill(null);
+  for(let i = n - 1; i < len; i++){
+    let up = 0;
+    for(let j = i - n + 1; j <= i; j++) if(kl[j].c > kl[j].o) up++;
+    psy[i] = up / n * 100;
+  }
+  const signal = new Array(len).fill(null);
+  for(let i = n + m - 2; i < len; i++){
+    let s = 0;
+    for(let j = i - m + 1; j <= i; j++) s += psy[j];   // PSY 从 n-1 起有效，均值也要从有效段算
+    signal[i] = s / m;
+  }
+  return { psy, signal };
+}
+
+// ROC（变动率，参数 12·6）：(今收 - N 根前收) / N 根前收 ×100，与 MTM 同为动量但做了归一化
+function rocOf(kl, n = 12, m = 6){
+  const len = kl.length;
+  const roc = new Array(len).fill(null);
+  for(let i = n; i < len; i++){
+    const prev = kl[i - n].c;
+    roc[i] = prev === 0 ? 0 : (kl[i].c - prev) / prev * 100;
+  }
+  const signal = new Array(len).fill(null);
+  for(let i = n + m - 1; i < len; i++){
+    let s = 0;
+    for(let j = i - m + 1; j <= i; j++) s += roc[j];
+    signal[i] = s / m;
+  }
+  return { roc, signal };
+}
+
+// DMA（差离值，参数 10·50·10）：短期均线 - 长期均线；信号线为 DMA 的 10 日均线
+function dmaOf(kl, s = 10, l = 50, m = 10){
+  const len = kl.length;
+  const c = kl.map(k => k.c);
+  const fast = ma(c, s), slow = ma(c, l);
+  const dma = new Array(len).fill(null);
+  for(let i = 0; i < len; i++){
+    if(fast[i] !== null && slow[i] !== null) dma[i] = fast[i] - slow[i];
+  }
+  const signal = new Array(len).fill(null);
+  for(let i = l + m - 2; i < len; i++){
+    let sum = 0;
+    for(let j = i - m + 1; j <= i; j++) sum += dma[j];
+    signal[i] = sum / m;
+  }
+  return { dma, signal };
+}
+
+// 折线型子图通用绘制：自动量程 + 可选零轴/参考虚线 + 多条折线 + 面板标签
+// 新增的 TRIX/BIAS/PSY/ROC/DMA 都套这个，避免五段重复代码
+function drawLineSub(g, cfg){
+  const { top, h, series, padL, cw, slot, start, vis, label, zero, refs } = cfg;
+  let hi = -Infinity, lo = Infinity;
+  for(let i = 0; i < vis.length; i++){
+    const idx = start + i;
+    for(const s of series){
+      const v = s.arr[idx];
+      if(v === null || v === undefined) continue;
+      if(v > hi) hi = v;
+      if(v < lo) lo = v;
+    }
+  }
+  if(!isFinite(hi) || !isFinite(lo)){ hi = 1; lo = -1; }
+  if(hi === lo){ hi += 1; lo -= 1; }
+  if(zero){ hi = Math.max(hi, 0); lo = Math.min(lo, 0); }   // 零轴始终留在量程内
+  const yOf = v => top + h - (v - lo) / (hi - lo) * h;
+  const refYs = (refs || []).filter(lv => lv <= hi && lv >= lo).map(yOf);   // 参考线像素位置，用来避让刻度文字
+
+  if(zero){
+    g.strokeStyle = "rgba(43,49,57,.9)";
+    g.beginPath(); g.moveTo(padL, yOf(0)); g.lineTo(padL + cw, yOf(0)); g.stroke();
+  }
+  for(const lv of (refs || [])){
+    if(lv > hi || lv < lo) continue;
+    g.strokeStyle = "rgba(43,49,57,.9)"; g.setLineDash([3, 3]);
+    g.beginPath(); g.moveTo(padL, yOf(lv)); g.lineTo(padL + cw, yOf(lv)); g.stroke();
+    g.setLineDash([]);
+    g.fillStyle = "#848e9c"; g.textAlign = "left"; g.textBaseline = "middle";
+    g.fillText(String(lv), padL + cw + 6, yOf(lv));
+  }
+  for(const s of series){
+    g.strokeStyle = s.color; g.lineWidth = 1.2; g.beginPath();
+    let started = false;
+    for(let i = 0; i < vis.length; i++){
+      const v = s.arr[start + i];
+      if(v === null || v === undefined) continue;
+      const x = padL + slot * (i + 0.5), y = yOf(v);
+      if(!started){ g.moveTo(x, y); started = true; } else g.lineTo(x, y);
+    }
+    g.stroke();
+  }
+  g.fillStyle = "#848e9c"; g.textAlign = "left"; g.textBaseline = "middle";
+  g.fillText(label, padL + 4, top + 9);
+  if(h >= 46){   // 子图太矮时只画面板名，不标上下刻度；参考线附近的刻度让位避免叠字
+    if(!refYs.some(y => Math.abs(y - (top + 4)) < 10)) g.fillText(fmt(hi, 2), padL + cw + 6, top + 4);
+    if(!refYs.some(y => Math.abs(y - (top + h - 2)) < 10)) g.fillText(fmt(lo, 2), padL + cw + 6, top + h - 2);
+  }
+}
+
 // 可视窗口：kZoom 表示画多少根，kOffset 表示距最新一根往历史方向偏移多少根
 let kZoom = 120, kOffset = 0;
 let kDrag = null;      // 拖拽状态
@@ -1219,6 +1362,8 @@ function drawKline(){
     ["macd", kShowMACD], ["rsi", kShowRSI], ["kdj", kShowKDJ],
     ["obv", kShowOBV], ["wr", kShowWR], ["dmi", kShowDMI],
     ["cci", kShowCCI], ["atr", kShowATR], ["mtm", kShowMTM],
+    ["trix", kShowTRIX], ["bias", kShowBIAS], ["psy", kShowPSY],
+    ["roc", kShowROC], ["dma", kShowDMA],
   ];
   const subCount = subPanels.filter(p => p[1]).length;
   // 子图超过 1 个时动态加高图表容器，主图不被压扁（每个额外子图 +110px）
@@ -1243,7 +1388,10 @@ function drawKline(){
   // 子图布局：成交量常驻，其余子图按开关顺序依次从下往上排，主图拿剩余高度
   const gap = 8;
   const volH  = Math.max(28, Math.round(ch * 0.13));
-  const subH  = Math.max(28, Math.round(ch * subRatio));   // 所有子图统一高度
+  // 子图统一高度，但至少给主图留 80px：子图开得多时按剩余高度压缩，避免主图被压成一条缝
+  const idealSubH = Math.max(28, Math.round(ch * subRatio));
+  const roomForSubs = ch - volH - gap * (1 + subCount) - 80;
+  const subH = Math.max(16, Math.min(idealSubH, Math.floor(roomForSubs / Math.max(subCount, 1))));
   const priceH = ch - volH - subH * subCount - gap * (1 + subCount);
   const priceTop = padT, priceBottom = padT + priceH;
   const volTop = priceBottom + gap;
@@ -1270,7 +1418,8 @@ function drawKline(){
   // 指标全量计算（提到取值前：BOLL 要参与主图价格范围），十字光标按绝对下标取值
   const allCloses = klines.map(k => k.c);
   kInd = null;
-  if(kShowMACD || kShowRSI || kShowBOLL || kShowKDJ || kShowOBV || kShowWR || kShowDMI || kShowCCI || kShowATR || kShowMTM){
+  if(kShowMACD || kShowRSI || kShowBOLL || kShowKDJ || kShowOBV || kShowWR || kShowDMI || kShowCCI || kShowATR || kShowMTM
+     || kShowTRIX || kShowBIAS || kShowPSY || kShowROC || kShowDMA){
     kInd = {};
     if(kShowMACD) Object.assign(kInd, macdOf(allCloses));
     if(kShowRSI){ kInd.r6 = rsiOf(allCloses, 6); kInd.r12 = rsiOf(allCloses, 12); kInd.r24 = rsiOf(allCloses, 24); }
@@ -1282,6 +1431,11 @@ function drawKline(){
     if(kShowCCI)  kInd.cci  = cciOf(klines);
     if(kShowATR)  kInd.atr  = atrOf(klines);
     if(kShowMTM)  kInd.mtm  = mtmOf(klines);
+    if(kShowTRIX) kInd.trix = trixOf(klines);
+    if(kShowBIAS) kInd.bias = biasOf(klines);
+    if(kShowPSY)  kInd.psy  = psyOf(klines);
+    if(kShowROC)  kInd.roc  = rocOf(klines);
+    if(kShowDMA)  kInd.dma  = dmaOf(klines);
   }
 
   let hi = -Infinity, lo = Infinity, vmax = 0;
@@ -1676,6 +1830,36 @@ function drawKline(){
     g.fillText(fmt(-mHi, 2), padL + cw + 6, mtmTop + mtmH - 2);
   }
 
+  // TRIX 子图：TRIX（黄）+ 信号线（紫），零轴居中区分多空动能
+  if(kShowTRIX && kInd && kInd.trix){
+    drawLineSub(g, { top: subTops.trix, h: subH, label: "TRIX 12·9", zero: true, padL, cw, slot, start, vis,
+      series: [{ arr: kInd.trix.trix, color: "#f0b90b" }, { arr: kInd.trix.signal, color: "#c084fc" }] });
+  }
+
+  // BIAS 子图：6/12/24 三条乖离率（黄/紫/蓝），零轴 = 价格贴住均线
+  if(kShowBIAS && kInd && kInd.bias){
+    drawLineSub(g, { top: subTops.bias, h: subH, label: "BIAS 6·12·24", zero: true, padL, cw, slot, start, vis,
+      series: [{ arr: kInd.bias[0], color: "#f0b90b" }, { arr: kInd.bias[1], color: "#c084fc" }, { arr: kInd.bias[2], color: "#5b8af0" }] });
+  }
+
+  // PSY 子图：心理线（黄）+ 均线（紫），75/25 为过热/过冷参考
+  if(kShowPSY && kInd && kInd.psy){
+    drawLineSub(g, { top: subTops.psy, h: subH, label: "PSY 12·6", refs: [75, 25], padL, cw, slot, start, vis,
+      series: [{ arr: kInd.psy.psy, color: "#f0b90b" }, { arr: kInd.psy.signal, color: "#c084fc" }] });
+  }
+
+  // ROC 子图：变动率（黄）+ 信号线（紫），零轴上下摆动
+  if(kShowROC && kInd && kInd.roc){
+    drawLineSub(g, { top: subTops.roc, h: subH, label: "ROC 12·6", zero: true, padL, cw, slot, start, vis,
+      series: [{ arr: kInd.roc.roc, color: "#f0b90b" }, { arr: kInd.roc.signal, color: "#c084fc" }] });
+  }
+
+  // DMA 子图：差离值（黄）+ 信号线（紫），上穿零轴视为多头
+  if(kShowDMA && kInd && kInd.dma){
+    drawLineSub(g, { top: subTops.dma, h: subH, label: "DMA 10·50·10", zero: true, padL, cw, slot, start, vis,
+      series: [{ arr: kInd.dma.dma, color: "#f0b90b" }, { arr: kInd.dma.signal, color: "#c084fc" }] });
+  }
+
   // 最新价虚线（只在窗口包含最新一根时画）
   if(start + vis.length >= klines.length){
     const yLast = yOf(klines[klines.length - 1].c);
@@ -1813,6 +1997,30 @@ function drawHover(idx, my){
     const mv = kInd.mtm.mtm[idx];
     rows.push(["MTM", fmt(mv, 2), mv >= 0 ? "#0ecb81" : "#f6465d"]);
     if(kInd.mtm.signal[idx] !== null) rows.push(["MTMMA", fmt(kInd.mtm.signal[idx], 2), "#c084fc"]);
+  }
+  if(kInd && kInd.trix && kInd.trix.trix[idx] !== null){
+    const tv = kInd.trix.trix[idx];
+    rows.push(["TRIX", fmt(tv, 4), tv >= 0 ? "#0ecb81" : "#f6465d"]);
+    if(kInd.trix.signal[idx] !== null) rows.push(["TRIX均", fmt(kInd.trix.signal[idx], 4), "#c084fc"]);
+  }
+  if(kInd && kInd.bias && kInd.bias[0][idx] !== null){
+    rows.push(["BIAS6", fmt(kInd.bias[0][idx], 2), "#f0b90b"]);
+    if(kInd.bias[1][idx] !== null) rows.push(["BIAS12", fmt(kInd.bias[1][idx], 2), "#c084fc"]);
+    if(kInd.bias[2][idx] !== null) rows.push(["BIAS24", fmt(kInd.bias[2][idx], 2), "#5b8af0"]);
+  }
+  if(kInd && kInd.psy && kInd.psy.psy[idx] !== null){
+    rows.push(["PSY", fmt(kInd.psy.psy[idx], 1), "#f0b90b"]);
+    if(kInd.psy.signal[idx] !== null) rows.push(["PSY均", fmt(kInd.psy.signal[idx], 1), "#c084fc"]);
+  }
+  if(kInd && kInd.roc && kInd.roc.roc[idx] !== null){
+    const rv = kInd.roc.roc[idx];
+    rows.push(["ROC", fmt(rv, 2) + "%", rv >= 0 ? "#0ecb81" : "#f6465d"]);
+    if(kInd.roc.signal[idx] !== null) rows.push(["ROC均", fmt(kInd.roc.signal[idx], 2) + "%", "#c084fc"]);
+  }
+  if(kInd && kInd.dma && kInd.dma.dma[idx] !== null){
+    const dv = kInd.dma.dma[idx];
+    rows.push(["DMA", fmt(dv, 2), dv >= 0 ? "#0ecb81" : "#f6465d"]);
+    if(kInd.dma.signal[idx] !== null) rows.push(["DMA均", fmt(kInd.dma.signal[idx], 2), "#c084fc"]);
   }
   const bw = 152, bh = rows.length * 17 + 16;
   let bx = x + 14;
@@ -3350,7 +3558,13 @@ document.getElementById("indBtns").addEventListener("click", e=>{
   else if(ind === "dmi")  kShowDMI  = !kShowDMI;
   else if(ind === "cci")  kShowCCI  = !kShowCCI;
   else if(ind === "atr")  kShowATR  = !kShowATR;
-  else                    kShowMTM  = !kShowMTM;
+  else if(ind === "mtm")  kShowMTM  = !kShowMTM;
+  else if(ind === "trix") kShowTRIX = !kShowTRIX;
+  else if(ind === "bias") kShowBIAS = !kShowBIAS;
+  else if(ind === "psy")  kShowPSY  = !kShowPSY;
+  else if(ind === "roc")  kShowROC  = !kShowROC;
+  else if(ind === "dma")  kShowDMA  = !kShowDMA;
+  else return;
   b.classList.toggle("on");
   drawKline();
 });
