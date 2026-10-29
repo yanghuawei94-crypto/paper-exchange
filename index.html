@@ -348,7 +348,19 @@ tbody tr:hover{background:var(--panel2)}
   <!-- 订单 -->
   <section id="view-orders" class="hidden">
     <div class="card">
-      <h3>订单历史 <span class="mid" style="font-weight:400">市价 + 限价 · 最新在前 · 保留最近 200 条</span></h3>
+      <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;margin-bottom:10px">
+        <h3 style="margin:0">订单历史 <span class="mid" style="font-weight:400">市价 + 限价 · 最新在前 · 保留最近 200 条</span></h3>
+        <button class="trade-btn" id="btnExportCsv">导出 CSV</button>
+      </div>
+      <div class="tf" style="margin-bottom:10px" id="orderFilter">
+        <button data-side="all" class="on">全部</button>
+        <button data-side="buy">买入</button>
+        <button data-side="sell">卖出</button>
+        <button data-kind="all" class="on">全部类型</button>
+        <button data-kind="market">市价</button>
+        <button data-kind="limit">限价</button>
+        <span class="mid" id="orderCount" style="margin-left:auto;align-self:center;font-size:12px"></span>
+      </div>
       <table>
         <thead><tr><th>时间</th><th>交易对</th><th>方向</th><th>类型</th><th>价格</th><th>数量</th><th>成交额</th><th>手续费</th></tr></thead>
         <tbody id="ordersBody"></tbody>
@@ -1711,9 +1723,14 @@ function renderMember(){
 }
 
 /* ---------- 渲染：订单历史 ---------- */
+let orderSide = "all";   // 订单页筛选：全部 / 买入 / 卖出
+let orderKind = "all";   // 全部类型 / 市价 / 限价
+
 function renderOrders(){
   const tb = document.getElementById("ordersBody");
-  const list = state.orders.slice().reverse();   // 最新在前
+  let list = state.orders.slice().reverse();   // 最新在前
+  if(orderSide !== "all") list = list.filter(o => o.side === orderSide);
+  if(orderKind !== "all") list = list.filter(o => o.kind === orderKind);
   tb.innerHTML = list.length ? list.map(o=>{
     const buy = o.side === "buy";
     return `<tr>
@@ -1727,7 +1744,55 @@ function renderOrders(){
       <td class="mid">${typeof o.fee === "number" ? fmt(o.fee,4) : "—"}</td>
     </tr>`;
   }).join("") : `<tr><td colspan="8" class="empty" style="text-align:center">暂无订单，去交易页下第一单</td></tr>`;
+  const cnt = document.getElementById("orderCount");
+  if(cnt) cnt.textContent = `${list.length} / ${state.orders.length} 条`;
 }
+
+// 订单筛选按钮
+document.getElementById("orderFilter").addEventListener("click", e => {
+  const b = e.target.closest("button");
+  if(!b) return;
+  if(b.dataset.side){
+    orderSide = b.dataset.side;
+    document.querySelectorAll('#orderFilter [data-side]').forEach(x => x.classList.toggle("on", x === b));
+  }else if(b.dataset.kind){
+    orderKind = b.dataset.kind;
+    document.querySelectorAll('#orderFilter [data-kind]').forEach(x => x.classList.toggle("on", x === b));
+  }
+  renderOrders();
+});
+
+// 按当前筛选条件导出 CSV（带 BOM，Excel 直接显示中文）
+function exportOrdersCsv(){
+  let list = state.orders.slice().reverse();
+  if(orderSide !== "all") list = list.filter(o => o.side === orderSide);
+  if(orderKind !== "all") list = list.filter(o => o.kind === orderKind);
+  if(!list.length){ toast("当前筛选下无订单可导出", "err"); return; }
+  const esc = v => {
+    const s = String(v ?? "");
+    return /[",\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s;
+  };
+  const rows = [["时间","交易对","方向","类型","价格","数量","成交额","手续费"]];
+  for(const o of list){
+    rows.push([
+      o.t, o.base + "/USDT", o.side === "buy" ? "买入" : "卖出",
+      o.kind === "limit" ? "限价" : "市价",
+      fmtPx(o.price), fmtQty(o.qty, o.base),
+      typeof o.amount === "number" ? fmt(o.amount, 2) : "",
+      typeof o.fee === "number" ? fmt(o.fee, 4) : ""
+    ]);
+  }
+  const csv = "\ufeff" + rows.map(r => r.map(esc).join(",")).join("\r\n");
+  const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = "orders_" + new Date().toISOString().slice(0, 19).replace(/[:T]/g, "-") + ".csv";
+  document.body.appendChild(a); a.click(); a.remove();
+  URL.revokeObjectURL(url);
+  toast(`已导出 ${list.length} 条订单 CSV`, "ok");
+}
+document.getElementById("btnExportCsv").addEventListener("click", exportOrdersCsv);
 
 /* ---------- 总渲染 ---------- */
 function renderAll(){
