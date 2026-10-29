@@ -428,6 +428,26 @@ tbody tr:hover{background:var(--panel2)}
             <button class="trade-btn" id="pCloseCancel" style="flex:1">取消</button>
           </div>
         </div>
+        <!-- 调保面板：仅逐仓持仓可用；追加扣可用 USDT，减少返还到可用 USDT，强平价实时重算 -->
+        <div id="mAdjPanel" class="hidden" style="background:var(--panel2);border:1px solid var(--border);border-radius:var(--r);padding:12px;margin-top:10px">
+          <div class="sub" id="mAdjInfo" style="margin-bottom:10px"></div>
+          <div class="tf" id="mAdjDir" style="margin-bottom:10px">
+            <button data-mdir="add" class="on">追加保证金</button>
+            <button data-mdir="reduce">减少保证金</button>
+          </div>
+          <div class="field" style="margin-bottom:10px">
+            <label for="mAdjAmt">金额 <span class="mid" id="mAdjHint"></span></label>
+            <div class="row"><input id="mAdjAmt" type="text" inputmode="decimal"><span class="unit">USDT</span></div>
+          </div>
+          <div class="sub" style="margin-bottom:10px">
+            调整后保证金 <span id="mAdjNewMargin">—</span> · 调整后强平价 <span id="mAdjNewLiq">—</span>
+          </div>
+          <div style="display:flex;gap:8px">
+            <button class="submit buy" id="mAdjConfirm" style="flex:2;padding:10px">确认调整</button>
+            <button class="trade-btn" id="mAdjMax" style="flex:1">最大</button>
+            <button class="trade-btn" id="mAdjCancel" style="flex:1">取消</button>
+          </div>
+        </div>
         <h3 style="margin-top:20px">合约委托 <span class="mid" style="font-weight:400;font-size:11px">限价开仓 · 触价自动成交</span></h3>
         <table>
           <thead><tr><th>时间</th><th>币种</th><th>方向</th><th>杠杆</th><th>委托价</th><th>保证金</th><th>操作</th></tr></thead>
@@ -598,7 +618,7 @@ tbody tr:hover{background:var(--panel2)}
   </section>
 
   <div class="foot">
-    模拟交易所 · Paper Exchange — 仅用于界面与流程演示 · build <span id="buildVer">20261030-21</span><br>
+    模拟交易所 · Paper Exchange — 仅用于界面与流程演示 · build <span id="buildVer">20261030-22</span><br>
     不构成投资建议，不涉及真实资金、真实交易、真实收益
   </div>
 </div>
@@ -2972,9 +2992,10 @@ function renderFutures(){
       <td class="${cls}">${futFmtSign(u)}</td>
       <td class="mid" title="维持保证金 ${fmt(futMaintMargin(pos), 2)} USDT · ${futTierOf(futNotional(pos)).label} ${(futTierOf(futNotional(pos)).mmr*100).toFixed(1)}%">${isCross ? "共用池" : fmtPx(futLiqPrice(pos))}</td>
       <td class="mid" style="font-size:11px">${tpsl}</td>
-      <td>
+      <td style="white-space:normal;min-width:160px">
         <button class="trade-btn" data-close-fut="${pos.id}">平仓</button>
         <button class="trade-btn" data-tpsl="${pos.id}" style="margin-left:4px">设置</button>
+        ${isCross ? "" : `<button class="trade-btn" data-adjm="${pos.id}" style="margin-left:4px">调保</button>`}
       </td>
     </tr>`;
   }).join("") : `<tr><td colspan="11" class="empty" style="text-align:center">暂无合约持仓</td></tr>`;
@@ -3032,6 +3053,11 @@ function renderFutures(){
   if(pCloseId){
     if(state.futures.some(p => p.id === pCloseId)) refreshPartialPanel();
     else closePartialPanel();
+  }
+  // 调保面板同理：持仓消失自动收起，仍在则刷新文案与预览（保留用户输入的金额）
+  if(mAdjId){
+    if(state.futures.some(p => p.id === mAdjId)) refreshMarginAdjPanel();
+    else closeMarginAdjPanel();
   }
 
   // 限价委托价输入框显隐
@@ -3568,6 +3594,82 @@ function confirmPartialClose(){
   closeFuturesPartial(id, qty);
 }
 
+/* ---------- 追加 / 减少保证金（仅逐仓，全仓共用池无需调保） ---------- */
+let mAdjId = null;      // 正在调保的持仓 id
+let mAdjDir = "add";    // add 追加 / reduce 减少
+
+// 最多可减少的保证金：调整后权益（保证金 + 未实现盈亏）需高于维持保证金，否则下一次行情刷新就会被强平。
+// 留 1% 维持保证金余量：减到「恰好等于强平线」会在当前价格立刻被强平（已踩过：减满即强平）
+function futMaxReduce(pos){
+  const need = futMaintMargin(pos) * 1.01 - futUpnl(pos);   // 不触发强平所需的最低保证金（含安全余量）
+  return Math.max(0, pos.margin - Math.max(0, need));
+}
+
+function openMarginAdj(id){
+  const pos = state.futures.find(p => p.id === id);
+  if(!pos){ toast("持仓不存在", "err"); return; }
+  if(pos.marginMode === "cross"){ toast("全仓共用保证金池，无需单独调保", "err"); return; }
+  mAdjId = id;
+  document.getElementById("mAdjAmt").value = "";
+  setMarginAdjDir("add");   // 默认追加，同时刷新面板
+  document.getElementById("mAdjPanel").classList.remove("hidden");
+}
+
+function closeMarginAdjPanel(){
+  mAdjId = null;
+  document.getElementById("mAdjPanel").classList.add("hidden");
+  document.getElementById("mAdjAmt").value = "";
+}
+
+function setMarginAdjDir(dir){
+  mAdjDir = dir;
+  document.querySelectorAll("#mAdjDir [data-mdir]").forEach(x => x.classList.toggle("on", x.dataset.mdir === dir));
+  refreshMarginAdjPanel();
+}
+
+// 面板文案/预览跟随行情与输入刷新（不清空用户输入的金额）
+function refreshMarginAdjPanel(){
+  const pos = state.futures.find(p => p.id === mAdjId);
+  if(!pos){ if(mAdjId) closeMarginAdjPanel(); return; }
+  const add = mAdjDir === "add";
+  document.getElementById("mAdjInfo").textContent =
+    `${pos.base} ${futSideLabel(pos.side)} ${pos.lev}x · 当前保证金 ${fmt(pos.margin, 2)} USDT · 维持保证金 ${fmt(futMaintMargin(pos), 2)} · 当前强平价 ${fmtPx(futLiqPrice(pos))}`;
+  document.getElementById("mAdjHint").textContent = add
+    ? `可用 ${fmt(state.usdt, 2)} USDT`
+    : `最多可减少 ${fmt(futMaxReduce(pos), 2)} USDT`;
+  document.getElementById("mAdjMax").style.display = add ? "none" : "";
+  const amt = parseFloat(document.getElementById("mAdjAmt").value) || 0;
+  const newMargin = pos.margin + (add ? amt : -amt);
+  document.getElementById("mAdjNewMargin").textContent = amt > 0 ? fmt(newMargin, 2) + " USDT" : "—";
+  // 强平价只读保证金/方向/开仓价/数量，展开一个浅拷贝试算即可
+  document.getElementById("mAdjNewLiq").textContent = (amt > 0 && newMargin > 0)
+    ? fmtPx(futLiqPrice({ ...pos, margin: newMargin })) : "—";
+}
+
+function confirmMarginAdj(){
+  const pos = state.futures.find(p => p.id === mAdjId);
+  if(!pos){ toast("持仓不存在", "err"); closeMarginAdjPanel(); return; }
+  // 金额向下取整到分，避免浮点尾数把可用余额扣成负数
+  const amt = Math.floor((parseFloat(document.getElementById("mAdjAmt").value) || 0) * 100) / 100;
+  if(!(amt > 0)){ toast("请输入调整金额", "err"); return; }
+  if(mAdjDir === "add"){
+    if(amt > state.usdt){ toast(`可用不足，当前 ${fmt(state.usdt, 2)} USDT`, "err"); return; }
+    state.usdt -= amt;
+    pos.margin += amt;
+  }else{
+    const maxRed = futMaxReduce(pos);
+    if(amt > maxRed){ toast(`最多可减少 ${fmt(maxRed, 2)} USDT（权益需高于维持保证金）`, "err"); return; }
+    pos.margin -= amt;
+    state.usdt += amt;
+  }
+  const newLiq = fmtPx(futLiqPrice(pos));
+  const dirTxt = mAdjDir === "add" ? "追加" : "减少";
+  closeMarginAdjPanel();
+  save();
+  renderAll();
+  toast(`已${dirTxt} ${fmt(amt, 2)} USDT 保证金 · 新强平价 ${newLiq}`, "ok");
+}
+
 /* ---------- 理财动作 ---------- */
 function openEarnPrompt(productId){
   const prod = EARN_PRODUCTS.find(p=>p.id===productId);
@@ -3703,6 +3805,25 @@ document.getElementById("futPosBody").addEventListener("click", e => {
   if(b){ openPartialClose(b.dataset.closeFut); return; }
   b = e.target.closest("[data-tpsl]");
   if(b){ setFutTpSl(b.dataset.tpsl); return; }
+  b = e.target.closest("[data-adjm]");
+  if(b){ openMarginAdj(b.dataset.adjm); return; }
+});
+document.getElementById("mAdjDir").addEventListener("click", e => {
+  const b = e.target.closest("[data-mdir]");
+  if(b) setMarginAdjDir(b.dataset.mdir);
+});
+document.getElementById("mAdjAmt").addEventListener("input", refreshMarginAdjPanel);
+document.getElementById("mAdjMax").addEventListener("click", () => {
+  const pos = state.futures.find(p => p.id === mAdjId);
+  if(!pos) return;
+  // 向下取整到分，与 confirm 的校验口径一致
+  document.getElementById("mAdjAmt").value = (Math.floor(futMaxReduce(pos) * 100) / 100).toFixed(2);
+  refreshMarginAdjPanel();
+});
+document.getElementById("mAdjConfirm").addEventListener("click", confirmMarginAdj);
+document.getElementById("mAdjCancel").addEventListener("click", closeMarginAdjPanel);
+document.getElementById("mAdjAmt").addEventListener("keydown", e => {
+  if(e.key === "Enter"){ e.preventDefault(); confirmMarginAdj(); }
 });
 document.getElementById("fCloseAllBtn").addEventListener("click", closeAllFutures);
 document.getElementById("pClosePct").addEventListener("click", e => {
