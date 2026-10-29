@@ -112,6 +112,8 @@ tbody tr:hover{background:var(--panel2)}
 }
 .tf button:hover{color:var(--text);border-color:var(--yellow)}
 .tf button.on{background:var(--yellow);color:#0b0e11;border-color:var(--yellow);font-weight:600}
+/* 指标按钮已到 10 个，窄屏允许换行，避免横向溢出被裁掉 */
+#indBtns{flex-wrap:wrap}
 .chart-box{position:relative;height:320px}
 .chart-box canvas{display:block;width:100%;height:100%;cursor:grab}
 @media(max-width:760px){ .chart-box{height:230px} }
@@ -246,6 +248,9 @@ tbody tr:hover{background:var(--panel2)}
           <button data-ind="obv">OBV</button>
           <button data-ind="wr">WR</button>
           <button data-ind="dmi">DMI</button>
+          <button data-ind="cci">CCI</button>
+          <button data-ind="atr">ATR</button>
+          <button data-ind="mtm">MTM</button>
         </div>
       </div>
       <div class="chart-box"><canvas id="klineCanvas"></canvas></div>
@@ -525,7 +530,7 @@ tbody tr:hover{background:var(--panel2)}
   </section>
 
   <div class="foot">
-    模拟交易所 · Paper Exchange — 仅用于界面与流程演示 · build <span id="buildVer">20261029-13</span><br>
+    模拟交易所 · Paper Exchange — 仅用于界面与流程演示 · build <span id="buildVer">20261029-14</span><br>
     不构成投资建议，不涉及真实资金、真实交易、真实收益
   </div>
 </div>
@@ -859,6 +864,9 @@ let kShowKDJ = false;
 let kShowOBV = false;
 let kShowWR  = false;
 let kShowDMI = false;
+let kShowCCI = false;
+let kShowATR = false;
+let kShowMTM = false;
 let kInd = null;       // 全量指标缓存 {dif, dea, bar, r6, r12, r24, boll, kdj}，按 klines 绝对下标对齐
 let kReqSeq = 0;       // 请求序号：并发时只接受最后一次发起的结果
 
@@ -1060,6 +1068,58 @@ function dmiOf(kl, n = 14){
   return { pdi, mdi, adx };
 }
 
+// CCI（顺势指标，参数 20）：(典型价 - 移动均价) / (0.015 × 平均绝对偏差)；±100 为超买超卖参考
+function cciOf(kl, n = 20){
+  const len = kl.length;
+  const out = new Array(len).fill(null);
+  const tp = kl.map(k => (k.h + k.l + k.c) / 3);
+  for(let i = n - 1; i < len; i++){
+    let s = 0;
+    for(let j = i - n + 1; j <= i; j++) s += tp[j];
+    const m = s / n;
+    let md = 0;
+    for(let j = i - n + 1; j <= i; j++) md += Math.abs(tp[j] - m);
+    md /= n;
+    out[i] = md === 0 ? 0 : (tp[i] - m) / (0.015 * md);
+  }
+  return out;
+}
+
+// ATR（平均真实波幅，参数 14）：Wilder 平滑，首值取前 n 个 TR 均值，前 n 根为 null
+function atrOf(kl, n = 14){
+  const len = kl.length;
+  const out = new Array(len).fill(null);
+  if(len < n + 1) return out;
+  const tr = new Array(len).fill(0);
+  for(let i = 1; i < len; i++){
+    const h = kl[i].h, l = kl[i].l, pc = kl[i-1].c;
+    tr[i] = Math.max(h - l, Math.abs(h - pc), Math.abs(l - pc));
+  }
+  let a = 0;
+  for(let i = 1; i <= n; i++) a += tr[i];
+  a /= n;
+  out[n] = a;
+  for(let i = n + 1; i < len; i++){
+    a = (a * (n - 1) + tr[i]) / n;
+    out[i] = a;
+  }
+  return out;
+}
+
+// MTM（动量指标，参数 12）：收盘价 - n 根前收盘价；信号线 MTMMA 为其 6 日均线
+function mtmOf(kl, n = 12, m = 6){
+  const len = kl.length;
+  const mtm = new Array(len).fill(null);
+  for(let i = n; i < len; i++) mtm[i] = kl[i].c - kl[i - n].c;
+  const signal = new Array(len).fill(null);
+  for(let i = n + m - 1; i < len; i++){   // 只用有效 MTM 段求均值，不把 null 当 0
+    let s = 0;
+    for(let j = i - m + 1; j <= i; j++) s += mtm[j];
+    signal[i] = s / m;
+  }
+  return { mtm, signal };
+}
+
 // 可视窗口：kZoom 表示画多少根，kOffset 表示距最新一根往历史方向偏移多少根
 let kZoom = 120, kOffset = 0;
 let kDrag = null;      // 拖拽状态
@@ -1074,10 +1134,16 @@ function drawKline(){
   const cv = document.getElementById("klineCanvas");
   if(!cv || !klines.length) return;
   const box = cv.parentElement;
+  // 子图开关表：数组顺序 = 从上到下的排列顺序（成交量常驻，不计入）
+  const subPanels = [
+    ["macd", kShowMACD], ["rsi", kShowRSI], ["kdj", kShowKDJ],
+    ["obv", kShowOBV], ["wr", kShowWR], ["dmi", kShowDMI],
+    ["cci", kShowCCI], ["atr", kShowATR], ["mtm", kShowMTM],
+  ];
+  const subCount = subPanels.filter(p => p[1]).length;
   // 子图超过 1 个时动态加高图表容器，主图不被压扁（每个额外子图 +110px）
-  const subs = (kShowMACD?1:0) + (kShowRSI?1:0) + (kShowKDJ?1:0) + (kShowOBV?1:0) + (kShowWR?1:0) + (kShowDMI?1:0);
   const baseH = window.innerWidth > 760 ? 320 : 230;
-  box.style.height = Math.min(window.innerHeight * 0.85, baseH + Math.max(0, subs - 1) * 110) + "px";
+  box.style.height = Math.min(window.innerHeight * 0.85, baseH + Math.max(0, subCount - 1) * 110) + "px";
   const W = box.clientWidth, H = box.clientHeight;
   if(W <= 0 || H <= 0) return;
 
@@ -1093,32 +1159,38 @@ function drawKline(){
   const padL = 4, padR = 78, padT = 8, padB = 20;
   const cw = W - padL - padR;
   const ch = H - padT - padB;
-  // 子图型指标数量（不包含 BOLL 主图叠加）
-  const subCount = (kShowMACD?1:0) + (kShowRSI?1:0) + (kShowKDJ?1:0) + (kShowOBV?1:0) + (kShowWR?1:0) + (kShowDMI?1:0);
   const subRatio = Math.min(0.15, 0.35 / Math.max(subCount, 2));   // 子图越多比例越小，最多各占 35%/2 个子图
-  // 子图布局：成交量常驻，MACD/RSI/KDJ/OBV/WR 按开关增减，主图拿剩余高度
+  // 子图布局：成交量常驻，其余子图按开关顺序依次从下往上排，主图拿剩余高度
   const gap = 8;
   const volH  = Math.max(28, Math.round(ch * 0.13));
-  const macdH = kShowMACD ? Math.max(28, Math.round(ch * subRatio)) : 0;
-  const rsiH  = kShowRSI  ? Math.max(28, Math.round(ch * subRatio)) : 0;
-  const kdjH  = kShowKDJ  ? Math.max(28, Math.round(ch * subRatio)) : 0;
-  const obvH  = kShowOBV  ? Math.max(28, Math.round(ch * subRatio)) : 0;
-  const wrH   = kShowWR   ? Math.max(28, Math.round(ch * subRatio)) : 0;
-  const dmiH  = kShowDMI  ? Math.max(28, Math.round(ch * subRatio)) : 0;
-  const priceH = ch - volH - macdH - rsiH - kdjH - obvH - wrH - dmiH - gap * (1 + (macdH ? 1 : 0) + (rsiH ? 1 : 0) + (kdjH ? 1 : 0) + (obvH ? 1 : 0) + (wrH ? 1 : 0) + (dmiH ? 1 : 0));
+  const subH  = Math.max(28, Math.round(ch * subRatio));   // 所有子图统一高度
+  const priceH = ch - volH - subH * subCount - gap * (1 + subCount);
   const priceTop = padT, priceBottom = padT + priceH;
   const volTop = priceBottom + gap;
-  const macdTop = volTop + volH + gap;
-  const rsiTop = (kShowMACD ? macdTop + macdH : volTop + volH) + gap;
-  const kdjTop = (kShowRSI ? rsiTop + rsiH : kShowMACD ? macdTop + macdH : volTop + volH) + gap;
-  const obvTop = (kShowKDJ ? kdjTop + kdjH : kShowRSI ? rsiTop + rsiH : kShowMACD ? macdTop + macdH : volTop + volH) + gap;
-  const wrTop = (kShowOBV ? obvTop + obvH : kShowKDJ ? kdjTop + kdjH : kShowRSI ? rsiTop + rsiH : kShowMACD ? macdTop + macdH : volTop + volH) + gap;
-  const dmiTop = (kShowWR ? wrTop + wrH : kShowOBV ? obvTop + obvH : kShowKDJ ? kdjTop + kdjH : kShowRSI ? rsiTop + rsiH : kShowMACD ? macdTop + macdH : volTop + volH) + gap;
+  const subTops = {};
+  let cursor = volTop + volH;
+  for(const [key, on] of subPanels){
+    if(!on) continue;
+    cursor += gap;
+    subTops[key] = cursor;
+    cursor += subH;
+  }
+  const chartBottomY = cursor;
+  // 各子图高度/顶部别名，绘制代码沿用原有变量名
+  const macdH = kShowMACD ? subH : 0, macdTop = kShowMACD ? subTops.macd : 0;
+  const rsiH  = kShowRSI  ? subH : 0, rsiTop  = kShowRSI  ? subTops.rsi  : 0;
+  const kdjH  = kShowKDJ  ? subH : 0, kdjTop  = kShowKDJ  ? subTops.kdj  : 0;
+  const obvH  = kShowOBV  ? subH : 0, obvTop  = kShowOBV  ? subTops.obv  : 0;
+  const wrH   = kShowWR   ? subH : 0, wrTop   = kShowWR   ? subTops.wr   : 0;
+  const dmiH  = kShowDMI  ? subH : 0, dmiTop  = kShowDMI  ? subTops.dmi  : 0;
+  const cciH  = kShowCCI  ? subH : 0, cciTop  = kShowCCI  ? subTops.cci  : 0;
+  const atrH  = kShowATR  ? subH : 0, atrTop  = kShowATR  ? subTops.atr  : 0;
+  const mtmH  = kShowMTM  ? subH : 0, mtmTop  = kShowMTM  ? subTops.mtm  : 0;
 
   // 指标全量计算（提到取值前：BOLL 要参与主图价格范围），十字光标按绝对下标取值
   const allCloses = klines.map(k => k.c);
   kInd = null;
-  if(kShowMACD || kShowRSI || kShowBOLL || kShowKDJ || kShowOBV || kShowWR || kShowDMI){
+  if(kShowMACD || kShowRSI || kShowBOLL || kShowKDJ || kShowOBV || kShowWR || kShowDMI || kShowCCI || kShowATR || kShowMTM){
     kInd = {};
     if(kShowMACD) Object.assign(kInd, macdOf(allCloses));
     if(kShowRSI){ kInd.r6 = rsiOf(allCloses, 6); kInd.r12 = rsiOf(allCloses, 12); kInd.r24 = rsiOf(allCloses, 24); }
@@ -1127,6 +1199,9 @@ function drawKline(){
     if(kShowOBV)  kInd.obv  = obvOf(klines);
     if(kShowWR)   kInd.wr   = wrOf(klines);
     if(kShowDMI)  kInd.dmi  = dmiOf(klines);
+    if(kShowCCI)  kInd.cci  = cciOf(klines);
+    if(kShowATR)  kInd.atr  = atrOf(klines);
+    if(kShowMTM)  kInd.mtm  = mtmOf(klines);
   }
 
   let hi = -Infinity, lo = Infinity, vmax = 0;
@@ -1233,7 +1308,7 @@ function drawKline(){
 
   // 子图分隔线 + 面板名
   g.font = "10px ui-monospace,Menlo,monospace";
-  [volTop, kShowMACD && macdTop, kShowRSI && rsiTop, kShowKDJ && kdjTop, kShowOBV && obvTop, kShowWR && wrTop, kShowDMI && dmiTop].filter(Boolean).forEach(y => {
+  [volTop, ...subPanels.map(([key, on]) => on ? subTops[key] : 0)].filter(Boolean).forEach(y => {
     g.strokeStyle = "rgba(43,49,57,.5)";
     g.beginPath(); g.moveTo(padL, y - 4); g.lineTo(padL + cw, y - 4); g.stroke();
   });
@@ -1427,6 +1502,100 @@ function drawKline(){
     g.fillText("0", padL + cw + 6, dmiTop + dmiH - 2);
   }
 
+  // CCI 子图：量程自适应（对称取整），±100 为超买超卖参考虚线，黄线
+  if(kShowCCI && kInd && kInd.cci){
+    let cHi = 0;
+    for(let i = 0; i < vis.length; i++){
+      const v = kInd.cci[start + i];
+      if(v !== null && Math.abs(v) > cHi) cHi = Math.abs(v);
+    }
+    cHi = Math.max(100, Math.ceil(cHi / 50) * 50);
+    const cyOf = v => cciTop + cciH - (v + cHi) / (2 * cHi) * cciH;
+    [100, 0, -100].forEach(lv => {
+      g.strokeStyle = "rgba(43,49,57,.9)"; g.setLineDash([3, 3]);
+      g.beginPath(); g.moveTo(padL, cyOf(lv)); g.lineTo(padL + cw, cyOf(lv)); g.stroke();
+      g.setLineDash([]);
+    });
+    g.strokeStyle = "#f0b90b"; g.lineWidth = 1.2; g.beginPath();
+    let started = false;
+    vis.forEach((_, i) => {
+      const v = kInd.cci[start + i];
+      if(v === null) return;
+      const x = padL + slot * (i + 0.5), y = cyOf(v);
+      if(!started){ g.moveTo(x, y); started = true; } else g.lineTo(x, y);
+    });
+    g.stroke();
+    g.fillStyle = "#848e9c"; g.textAlign = "left";
+    g.fillText("CCI 20", padL + 4, cciTop + 9);
+    if(cciH >= 46){   // 子图太矮时不画上下刻度，避免文字重叠
+      g.fillText("+100", padL + cw + 6, cyOf(100));
+      g.fillText("-100", padL + cw + 6, cyOf(-100));
+    }
+  }
+
+  // ATR 子图：量程 0 ~ 可视区最大值（随价格单位变化），黄线 + 填充渐变
+  if(kShowATR && kInd && kInd.atr){
+    let aHi = 0;
+    for(let i = 0; i < vis.length; i++){
+      const v = kInd.atr[start + i];
+      if(v !== null && v > aHi) aHi = v;
+    }
+    if(aHi <= 0) aHi = 1;
+    const ayOf = v => atrTop + atrH - v / aHi * atrH;
+    g.strokeStyle = "rgba(43,49,57,.9)";
+    g.beginPath(); g.moveTo(padL, ayOf(0)); g.lineTo(padL + cw, ayOf(0)); g.stroke();
+    // 线上方浅色填充，便于看清波幅大小
+    g.beginPath();
+    let started = false;
+    vis.forEach((_, i) => {
+      const v = kInd.atr[start + i];
+      if(v === null) return;
+      const x = padL + slot * (i + 0.5), y = ayOf(v);
+      if(!started){ g.moveTo(x, y); started = true; } else g.lineTo(x, y);
+    });
+    if(started){
+      g.strokeStyle = "#f0b90b"; g.lineWidth = 1.2; g.stroke();
+      g.lineTo(padL + slot * (vis.length - 0.5), ayOf(0));
+      g.lineTo(padL + slot * 0.5, ayOf(0));
+      g.closePath();
+      g.fillStyle = "rgba(240,185,11,.10)"; g.fill();
+    }
+    g.fillStyle = "#848e9c"; g.textAlign = "left";
+    g.fillText("ATR 14", padL + 4, atrTop + 9);
+    g.fillText(fmt(aHi, 2), padL + cw + 6, atrTop + 4);
+    g.fillText("0", padL + cw + 6, atrTop + atrH - 2);
+  }
+
+  // MTM 子图：零轴上下对称量程，MTM（黄）+ MTMMA（紫）
+  if(kShowMTM && kInd && kInd.mtm){
+    let mHi = 0;
+    for(let i = 0; i < vis.length; i++){
+      const idx = start + i;
+      for(const v of [kInd.mtm.mtm[idx], kInd.mtm.signal[idx]]){
+        if(v !== null && Math.abs(v) > mHi) mHi = Math.abs(v);
+      }
+    }
+    if(mHi <= 0) mHi = 1;
+    const myOf = v => mtmTop + mtmH - (v + mHi) / (2 * mHi) * mtmH;
+    g.strokeStyle = "rgba(43,49,57,.9)";
+    g.beginPath(); g.moveTo(padL, myOf(0)); g.lineTo(padL + cw, myOf(0)); g.stroke();
+    [[kInd.mtm.mtm, "#f0b90b"], [kInd.mtm.signal, "#c084fc"]].forEach(([arr, color]) => {
+      g.strokeStyle = color; g.lineWidth = 1.2; g.beginPath();
+      let started = false;
+      vis.forEach((_, i) => {
+        const v = arr[start + i];
+        if(v === null) return;
+        const x = padL + slot * (i + 0.5), y = myOf(v);
+        if(!started){ g.moveTo(x, y); started = true; } else g.lineTo(x, y);
+      });
+      g.stroke();
+    });
+    g.fillStyle = "#848e9c"; g.textAlign = "left";
+    g.fillText("MTM 12·6", padL + 4, mtmTop + 9);
+    g.fillText(fmt(mHi, 2), padL + cw + 6, mtmTop + 4);
+    g.fillText(fmt(-mHi, 2), padL + cw + 6, mtmTop + mtmH - 2);
+  }
+
   // 最新价虚线（只在窗口包含最新一根时画）
   if(start + vis.length >= klines.length){
     const yLast = yOf(klines[klines.length - 1].c);
@@ -1441,7 +1610,7 @@ function drawKline(){
   kBase.width = cv.width; kBase.height = cv.height;
   kBase.getContext("2d").drawImage(cv, 0, 0);
   kLayout = { W, H, padL, padR, padT, padB, cw, slot, priceTop, priceBottom, hi, lo, start, count: vis.length,
-              chartBottom: kShowDMI ? dmiTop + dmiH : kShowWR ? wrTop + wrH : kShowOBV ? obvTop + obvH : kShowKDJ ? kdjTop + kdjH : kShowRSI ? rsiTop + rsiH : kShowMACD ? macdTop + macdH : volTop + volH };
+              chartBottom: chartBottomY };
 
   // 每 15 秒刷新数据后会重画底图；若鼠标仍停在图上，重绘十字光标，避免闪烁消失
   if(kMouse && kHover >= 0 && kHover >= start && kHover < start + vis.length){
@@ -1553,6 +1722,17 @@ function drawHover(idx, my){
     rows.push(["+DI", fmt(kInd.dmi.pdi[idx], 1), "#0ecb81"]);
     rows.push(["-DI", fmt(kInd.dmi.mdi[idx], 1), "#f6465d"]);
     if(kInd.dmi.adx[idx] !== null) rows.push(["ADX", fmt(kInd.dmi.adx[idx], 1), "#f0b90b"]);
+  }
+  if(kInd && kInd.cci && kInd.cci[idx] !== null){
+    rows.push(["CCI", fmt(kInd.cci[idx], 1), "#f0b90b"]);
+  }
+  if(kInd && kInd.atr && kInd.atr[idx] !== null){
+    rows.push(["ATR", fmt(kInd.atr[idx], 2), "#f0b90b"]);
+  }
+  if(kInd && kInd.mtm && kInd.mtm.mtm[idx] !== null){
+    const mv = kInd.mtm.mtm[idx];
+    rows.push(["MTM", fmt(mv, 2), mv >= 0 ? "#0ecb81" : "#f6465d"]);
+    if(kInd.mtm.signal[idx] !== null) rows.push(["MTMMA", fmt(kInd.mtm.signal[idx], 2), "#c084fc"]);
   }
   const bw = 152, bh = rows.length * 17 + 16;
   let bx = x + 14;
@@ -2836,7 +3016,10 @@ document.getElementById("indBtns").addEventListener("click", e=>{
   else if(ind === "kdj")  kShowKDJ  = !kShowKDJ;
   else if(ind === "obv")  kShowOBV  = !kShowOBV;
   else if(ind === "wr")   kShowWR   = !kShowWR;
-  else                    kShowDMI  = !kShowDMI;
+  else if(ind === "dmi")  kShowDMI  = !kShowDMI;
+  else if(ind === "cci")  kShowCCI  = !kShowCCI;
+  else if(ind === "atr")  kShowATR  = !kShowATR;
+  else                    kShowMTM  = !kShowMTM;
   b.classList.toggle("on");
   drawKline();
 });
