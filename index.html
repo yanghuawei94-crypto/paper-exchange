@@ -427,7 +427,7 @@ tbody tr:hover{background:var(--panel2)}
   </section>
 
   <div class="foot">
-    模拟交易所 · Paper Exchange — 仅用于界面与流程演示 · build <span id="buildVer">20261029-8</span><br>
+    模拟交易所 · Paper Exchange — 仅用于界面与流程演示 · build <span id="buildVer">20261029-9</span><br>
     不构成投资建议，不涉及真实资金、真实交易、真实收益
   </div>
 </div>
@@ -1391,6 +1391,11 @@ function drawHover(idx, my){
   }
   if(kInd && kInd.wr && kInd.wr[idx] !== null){
     rows.push(["WR", fmt(kInd.wr[idx], 1), "#f0b90b"]);
+  }
+  if(kInd && kInd.dmi && kInd.dmi.pdi[idx] !== null){
+    rows.push(["+DI", fmt(kInd.dmi.pdi[idx], 1), "#0ecb81"]);
+    rows.push(["-DI", fmt(kInd.dmi.mdi[idx], 1), "#f6465d"]);
+    if(kInd.dmi.adx[idx] !== null) rows.push(["ADX", fmt(kInd.dmi.adx[idx], 1), "#f0b90b"]);
   }
   const bw = 152, bh = rows.length * 17 + 16;
   let bx = x + 14;
