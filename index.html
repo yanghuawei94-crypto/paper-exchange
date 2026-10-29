@@ -62,7 +62,6 @@ input{font-family:inherit;font-size:inherit}
   .tabs{order:3;flex:1 0 100%;width:100%}   /* 手机端 5 个 tab 独占一行 */
   .tab{flex:1;text-align:center;padding:7px 0}
   .wrap{padding:10px}
-  .card{overflow-x:auto}          /* 表格较宽时卡片内横向滚动，不撑破页面 */
   #view-market th:nth-child(4),#view-market td:nth-child(4){display:none}  /* 手机隐藏 24h 高低 */
   .notice{align-items:flex-start}
   /* 合约概览在手机上两列排布，避免 4 张 KPI 卡纵向堆太高 */
@@ -70,7 +69,15 @@ input{font-family:inherit;font-size:inherit}
   #view-futures .kpi{font-size:17px}
 }
 
-.card{background:var(--panel);border:1px solid var(--border);border-radius:var(--r);padding:14px}
+/* 平板/窄窗口（≤980px）：交易/合约双栏堆叠为单栏，持仓表不再被挤进约 330px 的窄列 */
+@media(max-width:980px){
+  .trade-grid{grid-template-columns:1fr}
+}
+
+.card{
+  background:var(--panel);border:1px solid var(--border);border-radius:var(--r);padding:14px;
+  overflow-x:auto;   /* 表格较宽时在卡片内部横向滚动，任何宽度都不撑破页面 */
+}
 .card h3{font-size:13px;color:var(--muted);font-weight:500;margin-bottom:10px}
 .kpi{font-size:22px;font-weight:700;font-variant-numeric:tabular-nums}
 .kpi.sm{font-size:16px}
@@ -343,7 +350,8 @@ tbody tr:hover{background:var(--panel2)}
       <div class="card"><h3>占用保证金</h3><div class="kpi" id="fMargin">—</div><div class="sub">已从可用 USDT 划出</div></div>
       <div class="card"><h3>资金费率</h3><div class="kpi" id="fFundRate">0.01%</div><div class="sub" id="fFundNext">每 8 小时结算 · 多付空收</div></div>
     </div>
-    <div class="grid trade-grid">
+    <!-- 合约页不用双栏：11 列持仓表在桌面也只有约 480px 列宽，必然溢出；改为上下通栏 -->
+    <div class="grid">
       <div class="card">
         <h3>开仓 <span class="mid" style="font-weight:400;font-size:11px">手续费 0.05% · 分档杠杆（名义越大杠杆越低，最高 20x）</span></h3>
         <div class="tf" id="fCoinBtns" style="margin-bottom:12px">
@@ -643,7 +651,7 @@ tbody tr:hover{background:var(--panel2)}
   </section>
 
   <div class="foot">
-    模拟交易所 · Paper Exchange — 仅用于界面与流程演示 · build <span id="buildVer">20261030-24</span><br>
+    模拟交易所 · Paper Exchange — 仅用于界面与流程演示 · build <span id="buildVer">20261030-25</span><br>
     不构成投资建议，不涉及真实资金、真实交易、真实收益
   </div>
 </div>
