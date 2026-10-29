@@ -651,7 +651,7 @@ tbody tr:hover{background:var(--panel2)}
   </section>
 
   <div class="foot">
-    模拟交易所 · Paper Exchange — 仅用于界面与流程演示 · build <span id="buildVer">20261030-25</span><br>
+    模拟交易所 · Paper Exchange — 仅用于界面与流程演示 · build <span id="buildVer">20261030-26</span><br>
     不构成投资建议，不涉及真实资金、真实交易、真实收益
   </div>
 </div>
@@ -3184,6 +3184,7 @@ function renderFutures(){
       <td class="mid" style="font-size:11px">${tpsl}</td>
       <td style="white-space:normal;min-width:160px">
         <button class="trade-btn" data-close-fut="${pos.id}">平仓</button>
+        <button class="trade-btn" data-rev="${pos.id}" style="margin-left:4px">反手</button>
         <button class="trade-btn" data-tpsl="${pos.id}" style="margin-left:4px">设置</button>
         ${isCross ? "" : `<button class="trade-btn" data-adjm="${pos.id}" style="margin-left:4px">调保</button>`}
       </td>
@@ -3206,7 +3207,7 @@ function renderFutures(){
 
   const hb = document.getElementById("futHistBody");
   const rows = state.futOrders.slice().reverse();
-  const reasonText = { tp: "止盈", sl: "止损", liq: "强平", limit: "限价", manual: "手动", pclose: "部分平仓" };
+  const reasonText = { tp: "止盈", sl: "止损", liq: "强平", limit: "限价", manual: "手动", pclose: "部分平仓", rev: "反手" };
   hb.innerHTML = rows.length ? rows.map(o=>{
     const pnlCls = o.pnl > 0 ? "up" : o.pnl < 0 ? "down" : "mid";
     const kind = o.kind === "open" ? (o.reason === "limit" ? "开仓(限价)" : "开仓") : `平仓(${reasonText[o.reason || "manual"] || "手动"})`;
@@ -3701,6 +3702,53 @@ function closeFutures(id, reason, forcedBack){
   toast(`${reasonText} ${pos.base} ${futSideLabel(pos.side)} · 返还 ${fmt(back, 2)} USDT · 盈亏 ${futFmtSign(s.pnl)}`, s.pnl >= 0 ? "ok" : "err");
 }
 
+// 一键反手：按标记价平仓后，用同等保证金 + 杠杆立刻开反向仓
+// 平仓所得先回可用 USDT，再扣新仓保证金 + 开仓手续费；可用不足时自动压低保证金（向下取整到分），实在开不出就只平仓
+function reverseFutures(id){
+  const i = state.futures.findIndex(p => p.id === id);
+  if(i < 0) return;
+  const pos = state.futures[i];
+  const c = COINS.find(x => x.base === pos.base) || COINS[0];
+  const p = priceOf(pos.base);
+  if(!(p > 0)){ toast("价格不可用", "err"); return; }
+  const s = futSettle(pos, pos.qty);   // 平仓结算（只算钱，不改状态）
+  const newSide = pos.side === "long" ? "short" : "long";
+  // 新仓保证金：默认与平仓前相同；预算（现有可用 + 平仓返还）不足时压到能付清 保证金+手续费 的上限
+  const budget = state.usdt + s.back;
+  let margin = pos.margin;
+  if(margin + margin * pos.lev * FUT_FEE > budget){
+    margin = Math.floor((budget / (1 + pos.lev * FUT_FEE)) * 100) / 100;
+  }
+  // 平仓落账（reason=rev，历史里显示「反手」）
+  state.usdt += s.back;
+  state.futures.splice(i, 1);
+  state.futOrders.push({ t: nowT(), base: pos.base, side: pos.side, kind: "close", price: s.p, qty: pos.qty, pnl: s.pnl, fee: s.fee, reason: "rev" });
+  // 新仓参数：杠杆走分档校验，数量按当前标记价重算
+  const lev = margin > 0 ? futMaxLevFor(margin, pos.lev) : pos.lev;
+  const fee = margin * lev * FUT_FEE;
+  const qty = margin > 0 ? Math.floor(margin * lev / p * 10 ** c.prec) / 10 ** c.prec : 0;
+  if(qty <= 0){
+    // 深度亏损或数量不足最小精度：只平仓，不开反向仓
+    if(state.futOrders.length > FUT_HIST_MAX) state.futOrders = state.futOrders.slice(-FUT_HIST_MAX);
+    save();
+    renderAll();
+    toast(`已反手平仓 ${pos.base} ${futSideLabel(pos.side)} · 盈亏 ${futFmtSign(s.pnl)}（平仓所得不足，未开反向仓）`, "err");
+    return;
+  }
+  // 反向开仓落账：同币种、同杠杆、同保证金模式
+  state.usdt -= margin + fee;
+  state.futures.push({
+    id: "f" + Date.now() + Math.floor(Math.random() * 1e4),
+    base: pos.base, side: newSide, qty, entry: p, lev, margin, fee,
+    openAt: Date.now(), lastFundAt: Date.now(), marginMode: pos.marginMode,
+  });
+  state.futOrders.push({ t: nowT(), base: pos.base, side: newSide, kind: "open", price: p, qty, pnl: 0, fee });
+  if(state.futOrders.length > FUT_HIST_MAX) state.futOrders = state.futOrders.slice(-FUT_HIST_MAX);
+  save();
+  renderAll();
+  toast(`已反手 ${pos.base} ${futSideLabel(pos.side)}→${futSideLabel(newSide)} · 平仓盈亏 ${futFmtSign(s.pnl)} · 新仓保证金 ${fmt(margin, 2)} USDT`, s.pnl >= 0 ? "ok" : "err");
+}
+
 // 部分平仓：按数量平掉一部分，剩余持仓的开仓价不变、保证金按比例扣减
 function closeFuturesPartial(id, qty){
   const pos = state.futures.find(p => p.id === id);
@@ -3999,6 +4047,8 @@ document.getElementById("futPosBody").addEventListener("click", e => {
   if(b){ setFutTpSl(b.dataset.tpsl); return; }
   b = e.target.closest("[data-adjm]");
   if(b){ openMarginAdj(b.dataset.adjm); return; }
+  b = e.target.closest("[data-rev]");
+  if(b){ reverseFutures(b.dataset.rev); return; }
 });
 document.getElementById("mAdjDir").addEventListener("click", e => {
   const b = e.target.closest("[data-mdir]");
