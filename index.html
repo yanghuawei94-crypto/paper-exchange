@@ -232,6 +232,7 @@ tbody tr:hover{background:var(--panel2)}
           <button data-ind="boll">BOLL</button>
           <button data-ind="kdj">KDJ</button>
           <button data-ind="obv">OBV</button>
+          <button data-ind="wr">WR</button>
         </div>
       </div>
       <div class="chart-box"><canvas id="klineCanvas"></canvas></div>
@@ -677,6 +678,7 @@ let kShowRSI = false;
 let kShowBOLL = false;   // BOLL 叠加在主图，不占子图
 let kShowKDJ = false;
 let kShowOBV = false;
+let kShowWR  = false;
 let kInd = null;       // 全量指标缓存 {dif, dea, bar, r6, r12, r24, boll, kdj}，按 klines 绝对下标对齐
 let kReqSeq = 0;       // 请求序号：并发时只接受最后一次发起的结果
 
@@ -819,6 +821,20 @@ function obvOf(kl, n = 30){
   const signal = ma(obv, n);   // 前 n-1 点为 null
   return { obv, signal };
 }
+// WR（Williams %R，参数 14）：范围 -100 ~ 0，前 n-1 根为 null；-20 超买 / -80 超卖（与 RSI 互补）
+function wrOf(kl, n = 14){
+  const len = kl.length;
+  const out = new Array(len).fill(null);
+  for(let i = n - 1; i < len; i++){
+    let hh = -Infinity, ll = Infinity;
+    for(let j = i - n + 1; j <= i; j++){
+      if(kl[j].h > hh) hh = kl[j].h;
+      if(kl[j].l < ll) ll = kl[j].l;
+    }
+    out[i] = hh === ll ? -50 : (hh - kl[i].c) / (hh - ll) * -100;
+  }
+  return out;
+}
 
 // 可视窗口：kZoom 表示画多少根，kOffset 表示距最新一根往历史方向偏移多少根
 let kZoom = 120, kOffset = 0;
@@ -835,7 +851,7 @@ function drawKline(){
   if(!cv || !klines.length) return;
   const box = cv.parentElement;
   // 子图超过 1 个时动态加高图表容器，主图不被压扁（每个额外子图 +110px）
-  const subs = (kShowMACD?1:0) + (kShowRSI?1:0) + (kShowKDJ?1:0) + (kShowOBV?1:0);
+  const subs = (kShowMACD?1:0) + (kShowRSI?1:0) + (kShowKDJ?1:0) + (kShowOBV?1:0) + (kShowWR?1:0);
   const baseH = window.innerWidth > 760 ? 320 : 230;
   box.style.height = Math.min(window.innerHeight * 0.85, baseH + Math.max(0, subs - 1) * 110) + "px";
   const W = box.clientWidth, H = box.clientHeight;
@@ -853,31 +869,37 @@ function drawKline(){
   const padL = 4, padR = 78, padT = 8, padB = 20;
   const cw = W - padL - padR;
   const ch = H - padT - padB;
-  // 子图布局：成交量常驻，MACD/RSI/KDJ/OBV 按开关增减，主图拿剩余高度
+  // 子图型指标数量（不包含 BOLL 主图叠加）
+  const subCount = (kShowMACD?1:0) + (kShowRSI?1:0) + (kShowKDJ?1:0) + (kShowOBV?1:0) + (kShowWR?1:0);
+  const subRatio = Math.min(0.15, 0.35 / Math.max(subCount, 2));   // 子图越多比例越小，最多各占 35%/2 个子图
+  // 子图布局：成交量常驻，MACD/RSI/KDJ/OBV/WR 按开关增减，主图拿剩余高度
   const gap = 8;
-  const volH  = Math.round(ch * 0.13);
-  const macdH = kShowMACD ? Math.round(ch * 0.15) : 0;
-  const rsiH  = kShowRSI  ? Math.round(ch * 0.15) : 0;
-  const kdjH  = kShowKDJ  ? Math.round(ch * 0.15) : 0;
-  const obvH  = kShowOBV  ? Math.round(ch * 0.15) : 0;
-  const priceH = ch - volH - macdH - rsiH - kdjH - obvH - gap * (1 + (macdH ? 1 : 0) + (rsiH ? 1 : 0) + (kdjH ? 1 : 0) + (obvH ? 1 : 0));
+  const volH  = Math.max(28, Math.round(ch * 0.13));
+  const macdH = kShowMACD ? Math.max(28, Math.round(ch * subRatio)) : 0;
+  const rsiH  = kShowRSI  ? Math.max(28, Math.round(ch * subRatio)) : 0;
+  const kdjH  = kShowKDJ  ? Math.max(28, Math.round(ch * subRatio)) : 0;
+  const obvH  = kShowOBV  ? Math.max(28, Math.round(ch * subRatio)) : 0;
+  const wrH   = kShowWR   ? Math.max(28, Math.round(ch * subRatio)) : 0;
+  const priceH = ch - volH - macdH - rsiH - kdjH - obvH - wrH - gap * (1 + (macdH ? 1 : 0) + (rsiH ? 1 : 0) + (kdjH ? 1 : 0) + (obvH ? 1 : 0) + (wrH ? 1 : 0));
   const priceTop = padT, priceBottom = padT + priceH;
   const volTop = priceBottom + gap;
   const macdTop = volTop + volH + gap;
   const rsiTop = (kShowMACD ? macdTop + macdH : volTop + volH) + gap;
   const kdjTop = (kShowRSI ? rsiTop + rsiH : kShowMACD ? macdTop + macdH : volTop + volH) + gap;
   const obvTop = (kShowKDJ ? kdjTop + kdjH : kShowRSI ? rsiTop + rsiH : kShowMACD ? macdTop + macdH : volTop + volH) + gap;
+  const wrTop = (kShowOBV ? obvTop + obvH : kShowKDJ ? kdjTop + kdjH : kShowRSI ? rsiTop + rsiH : kShowMACD ? macdTop + macdH : volTop + volH) + gap;
 
   // 指标全量计算（提到取值前：BOLL 要参与主图价格范围），十字光标按绝对下标取值
   const allCloses = klines.map(k => k.c);
   kInd = null;
-  if(kShowMACD || kShowRSI || kShowBOLL || kShowKDJ || kShowOBV){
+  if(kShowMACD || kShowRSI || kShowBOLL || kShowKDJ || kShowOBV || kShowWR){
     kInd = {};
     if(kShowMACD) Object.assign(kInd, macdOf(allCloses));
     if(kShowRSI){ kInd.r6 = rsiOf(allCloses, 6); kInd.r12 = rsiOf(allCloses, 12); kInd.r24 = rsiOf(allCloses, 24); }
     if(kShowBOLL) kInd.boll = bollOf(allCloses);
     if(kShowKDJ)  kInd.kdj  = kdjOf(klines);
     if(kShowOBV)  kInd.obv  = obvOf(klines);
+    if(kShowWR)   kInd.wr   = wrOf(klines);
   }
 
   let hi = -Infinity, lo = Infinity, vmax = 0;
@@ -984,7 +1006,7 @@ function drawKline(){
 
   // 子图分隔线 + 面板名
   g.font = "10px ui-monospace,Menlo,monospace";
-  [volTop, kShowMACD && macdTop, kShowRSI && rsiTop, kShowKDJ && kdjTop, kShowOBV && obvTop].filter(Boolean).forEach(y => {
+  [volTop, kShowMACD && macdTop, kShowRSI && rsiTop, kShowKDJ && kdjTop, kShowOBV && obvTop, kShowWR && wrTop].filter(Boolean).forEach(y => {
     g.strokeStyle = "rgba(43,49,57,.5)";
     g.beginPath(); g.moveTo(padL, y - 4); g.lineTo(padL + cw, y - 4); g.stroke();
   });
@@ -1122,6 +1144,29 @@ function drawKline(){
     g.fillText(fmt(oLo, 0), padL + cw + 6, obvTop + obvH - 2);
   }
 
+  // WR 子图：固定量程 -100 ~ 0，-20 / -80 参考虚线（超买 / 超卖），黄线
+  if(kShowWR && kInd && kInd.wr){
+    const wrOf = v => wrTop + wrH - (v + 100) / 100 * wrH;   // -100 压底 / 0 置顶
+    [-20, -80].forEach(lv => {
+      g.strokeStyle = "rgba(43,49,57,.9)"; g.setLineDash([3, 3]);
+      g.beginPath(); g.moveTo(padL, wrOf(lv)); g.lineTo(padL + cw, wrOf(lv)); g.stroke();
+      g.setLineDash([]);
+    });
+    g.strokeStyle = "#f0b90b"; g.lineWidth = 1.2; g.beginPath();
+    let started = false;
+    vis.forEach((_, i) => {
+      const v = kInd.wr[start + i];
+      if(v === null) return;
+      const x = padL + slot * (i + 0.5), y = wrOf(v);
+      if(!started){ g.moveTo(x, y); started = true; } else g.lineTo(x, y);
+    });
+    g.stroke();
+    g.fillStyle = "#848e9c"; g.textAlign = "left";
+    g.fillText("WR 14", padL + 4, wrTop + 9);
+    g.fillText("0",   padL + cw + 6, wrTop + 4);
+    g.fillText("-100", padL + cw + 6, wrTop + wrH - 2);
+  }
+
   // 最新价虚线（只在窗口包含最新一根时画）
   if(start + vis.length >= klines.length){
     const yLast = yOf(klines[klines.length - 1].c);
@@ -1136,7 +1181,7 @@ function drawKline(){
   kBase.width = cv.width; kBase.height = cv.height;
   kBase.getContext("2d").drawImage(cv, 0, 0);
   kLayout = { W, H, padL, padR, padT, padB, cw, slot, priceTop, priceBottom, hi, lo, start, count: vis.length,
-              chartBottom: kShowOBV ? obvTop + obvH : kShowKDJ ? kdjTop + kdjH : kShowRSI ? rsiTop + rsiH : kShowMACD ? macdTop + macdH : volTop + volH };
+              chartBottom: kShowWR ? wrTop + wrH : kShowOBV ? obvTop + obvH : kShowKDJ ? kdjTop + kdjH : kShowRSI ? rsiTop + rsiH : kShowMACD ? macdTop + macdH : volTop + volH };
 
   // 每 15 秒刷新数据后会重画底图；若鼠标仍停在图上，重绘十字光标，避免闪烁消失
   if(kMouse && kHover >= 0 && kHover >= start && kHover < start + vis.length){
@@ -1240,6 +1285,9 @@ function drawHover(idx, my){
   if(kInd && kInd.obv){
     rows.push(["OBV", fmt(kInd.obv.obv[idx], 0), "#f0b90b"]);
     if(kInd.obv.signal[idx] !== null) rows.push(["OBV均", fmt(kInd.obv.signal[idx], 0), "#c084fc"]);
+  }
+  if(kInd && kInd.wr && kInd.wr[idx] !== null){
+    rows.push(["WR", fmt(kInd.wr[idx], 1), "#f0b90b"]);
   }
   const bw = 152, bh = rows.length * 17 + 16;
   let bx = x + 14;
@@ -2046,7 +2094,8 @@ document.getElementById("indBtns").addEventListener("click", e=>{
   else if(ind === "rsi")  kShowRSI  = !kShowRSI;
   else if(ind === "boll") kShowBOLL = !kShowBOLL;
   else if(ind === "kdj")  kShowKDJ  = !kShowKDJ;
-  else                    kShowOBV  = !kShowOBV;
+  else if(ind === "obv")  kShowOBV  = !kShowOBV;
+  else                    kShowWR   = !kShowWR;
   b.classList.toggle("on");
   drawKline();
 });
