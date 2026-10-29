@@ -83,6 +83,9 @@ th{
 th:first-child,td:first-child{text-align:left}
 td{padding:9px 6px;border-bottom:1px solid rgba(43,49,57,.5);text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap}
 tbody tr:hover{background:var(--panel2)}
+.sortable{cursor:pointer;user-select:none}
+.sortable:hover{color:var(--text)}
+.sortable .arw{font-size:9px;margin-left:3px;color:var(--yellow)}
 .sym{display:flex;align-items:center;gap:8px}
 .sym .ic{
   width:24px;height:24px;border-radius:50%;background:var(--panel2);border:1px solid var(--border);
@@ -347,7 +350,7 @@ tbody tr:hover{background:var(--panel2)}
     <div class="card">
       <h3>持仓明细</h3>
       <table>
-        <thead><tr><th>币种</th><th>数量</th><th>成本均价</th><th>最新价</th><th>市值</th><th>浮盈亏</th></tr></thead>
+        <thead><tr><th data-sort="base" class="sortable">币种<span class="arw"></span></th><th>数量</th><th>成本均价</th><th>最新价</th><th data-sort="mv" class="sortable">市值<span class="arw"></span></th><th data-sort="pnl" class="sortable">浮盈亏<span class="arw"></span></th></tr></thead>
         <tbody id="assetBody"></tbody>
       </table>
       <div style="margin-top:14px;display:flex;gap:8px;flex-wrap:wrap;align-items:center">
@@ -427,7 +430,7 @@ tbody tr:hover{background:var(--panel2)}
   </section>
 
   <div class="foot">
-    模拟交易所 · Paper Exchange — 仅用于界面与流程演示 · build <span id="buildVer">20261029-9</span><br>
+    模拟交易所 · Paper Exchange — 仅用于界面与流程演示 · build <span id="buildVer">20261029-10</span><br>
     不构成投资建议，不涉及真实资金、真实交易、真实收益
   </div>
 </div>
@@ -1645,6 +1648,7 @@ function updateTradeCalc(){
 }
 
 /* ---------- 渲染：资产 ---------- */
+let assetSort = { key:"mv", dir:-1 };   // 持仓明细排序：默认按市值降序
 // 资产分布环形图：纯 Canvas 2D 手绘，不引第三方库
 const ALLOC_COLORS = ["#f0b90b","#0ecb81","#4a9eff","#f6465d","#2dc7c9","#e8a33d","#8fa3b8","#b07cf0"];
 
@@ -1723,21 +1727,30 @@ function renderAssets(){
     </div>`;
   }).join("");
 
-  // 明细
+  // 明细：支持按币种 / 市值 / 浮盈亏排序（点表头切换升降序）
   const ab = document.getElementById("assetBody");
-  const rows = COINS.filter(c => holdQty(c.base) > 0);
-  ab.innerHTML = rows.length ? rows.map(c=>{
+  const rows = COINS.filter(c => holdQty(c.base) > 0).map(c=>{
     const h = state.holdings[c.base];
-    const mv = h.qty * priceOf(c.base);
-    const pnl = (priceOf(c.base) - h.cost) * h.qty;
-    const cls = pnl > 0 ? "up" : pnl < 0 ? "down" : "mid";
+    const px = priceOf(c.base);
+    return { base:c.base, qty:h.qty, cost:h.cost, px, mv:h.qty*px, pnl:(px-h.cost)*h.qty };
+  });
+  rows.sort((a,b)=>{
+    const k = assetSort.key;
+    const d = k === "base" ? a.base.localeCompare(b.base) : (a[k] - b[k]);
+    return d * assetSort.dir;
+  });
+  document.querySelectorAll("#view-assets th.sortable").forEach(th=>{
+    th.querySelector(".arw").textContent = th.dataset.sort === assetSort.key ? (assetSort.dir < 0 ? "▼" : "▲") : "";
+  });
+  ab.innerHTML = rows.length ? rows.map(r=>{
+    const cls = r.pnl > 0 ? "up" : r.pnl < 0 ? "down" : "mid";
     return `<tr>
-      <td>${c.base}</td>
-      <td>${fmtQty(h.qty, c.base)}</td>
-      <td class="mid">${fmtPx(h.cost)}</td>
-      <td>${fmtPx(priceOf(c.base))}</td>
-      <td>${fmt(mv,2)}</td>
-      <td class="${cls}">${(pnl>=0?"+":"")}${fmt(pnl,2)}</td>
+      <td>${r.base}</td>
+      <td>${fmtQty(r.qty, r.base)}</td>
+      <td class="mid">${fmtPx(r.cost)}</td>
+      <td>${fmtPx(r.px)}</td>
+      <td>${fmt(r.mv,2)}</td>
+      <td class="${cls}">${(r.pnl>=0?"+":"")}${fmt(r.pnl,2)}</td>
     </tr>`;
   }).join("") : `<tr><td colspan="6" class="empty" style="text-align:center">暂无持仓</td></tr>`;
 
@@ -2373,6 +2386,15 @@ document.getElementById("earnBody").addEventListener("click", e=>{
 document.getElementById("plans").addEventListener("click", e=>{
   const b = e.target.closest("[data-plan]");
   if(b && !b.disabled) setPlan(b.dataset.plan);
+});
+
+// 持仓明细表头排序：同一列再点一次切换升降序，换列默认降序
+document.querySelectorAll("#view-assets th.sortable").forEach(th=>{
+  th.addEventListener("click", ()=>{
+    const k = th.dataset.sort;
+    assetSort = { key:k, dir: assetSort.key === k ? -assetSort.dir : -1 };
+    renderAssets();
+  });
 });
 
 // 充值金额快捷填充
