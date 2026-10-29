@@ -231,6 +231,7 @@ tbody tr:hover{background:var(--panel2)}
           <button data-ind="rsi">RSI</button>
           <button data-ind="boll">BOLL</button>
           <button data-ind="kdj">KDJ</button>
+          <button data-ind="obv">OBV</button>
         </div>
       </div>
       <div class="chart-box"><canvas id="klineCanvas"></canvas></div>
@@ -663,6 +664,7 @@ let kShowMACD = window.innerWidth > 760;   // 窄屏默认关子图，保住主�
 let kShowRSI = false;
 let kShowBOLL = false;   // BOLL 叠加在主图，不占子图
 let kShowKDJ = false;
+let kShowOBV = false;
 let kInd = null;       // 全量指标缓存 {dif, dea, bar, r6, r12, r24, boll, kdj}，按 klines 绝对下标对齐
 let kReqSeq = 0;       // 请求序号：并发时只接受最后一次发起的结果
 
@@ -795,6 +797,16 @@ function kdjOf(kl, n = 9){
   }
   return { k: K, d: D, j: J };
 }
+// OBV 能量潮：收涨加量、收跌减量、平盘不变，累计值；附 30 周期均线做信号线
+function obvOf(kl, n = 30){
+  const len = kl.length;
+  const obv = new Array(len).fill(0);
+  for(let i = 1; i < len; i++){
+    obv[i] = obv[i-1] + (kl[i].c > kl[i-1].c ? kl[i].v : kl[i].c < kl[i-1].c ? -kl[i].v : 0);
+  }
+  const signal = ma(obv, n);   // 前 n-1 点为 null
+  return { obv, signal };
+}
 
 // 可视窗口：kZoom 表示画多少根，kOffset 表示距最新一根往历史方向偏移多少根
 let kZoom = 120, kOffset = 0;
@@ -810,6 +822,10 @@ function drawKline(){
   const cv = document.getElementById("klineCanvas");
   if(!cv || !klines.length) return;
   const box = cv.parentElement;
+  // 子图超过 1 个时动态加高图表容器，主图不被压扁（每个额外子图 +110px）
+  const subs = (kShowMACD?1:0) + (kShowRSI?1:0) + (kShowKDJ?1:0) + (kShowOBV?1:0);
+  const baseH = window.innerWidth > 760 ? 320 : 230;
+  box.style.height = Math.min(window.innerHeight * 0.85, baseH + Math.max(0, subs - 1) * 110) + "px";
   const W = box.clientWidth, H = box.clientHeight;
   if(W <= 0 || H <= 0) return;
 
@@ -825,28 +841,31 @@ function drawKline(){
   const padL = 4, padR = 78, padT = 8, padB = 20;
   const cw = W - padL - padR;
   const ch = H - padT - padB;
-  // 子图布局：成交量常驻，MACD/RSI/KDJ 按开关增减，主图拿剩余高度
+  // 子图布局：成交量常驻，MACD/RSI/KDJ/OBV 按开关增减，主图拿剩余高度
   const gap = 8;
   const volH  = Math.round(ch * 0.13);
   const macdH = kShowMACD ? Math.round(ch * 0.15) : 0;
   const rsiH  = kShowRSI  ? Math.round(ch * 0.15) : 0;
   const kdjH  = kShowKDJ  ? Math.round(ch * 0.15) : 0;
-  const priceH = ch - volH - macdH - rsiH - kdjH - gap * (1 + (macdH ? 1 : 0) + (rsiH ? 1 : 0) + (kdjH ? 1 : 0));
+  const obvH  = kShowOBV  ? Math.round(ch * 0.15) : 0;
+  const priceH = ch - volH - macdH - rsiH - kdjH - obvH - gap * (1 + (macdH ? 1 : 0) + (rsiH ? 1 : 0) + (kdjH ? 1 : 0) + (obvH ? 1 : 0));
   const priceTop = padT, priceBottom = padT + priceH;
   const volTop = priceBottom + gap;
   const macdTop = volTop + volH + gap;
   const rsiTop = (kShowMACD ? macdTop + macdH : volTop + volH) + gap;
   const kdjTop = (kShowRSI ? rsiTop + rsiH : kShowMACD ? macdTop + macdH : volTop + volH) + gap;
+  const obvTop = (kShowKDJ ? kdjTop + kdjH : kShowRSI ? rsiTop + rsiH : kShowMACD ? macdTop + macdH : volTop + volH) + gap;
 
   // 指标全量计算（提到取值前：BOLL 要参与主图价格范围），十字光标按绝对下标取值
   const allCloses = klines.map(k => k.c);
   kInd = null;
-  if(kShowMACD || kShowRSI || kShowBOLL || kShowKDJ){
+  if(kShowMACD || kShowRSI || kShowBOLL || kShowKDJ || kShowOBV){
     kInd = {};
     if(kShowMACD) Object.assign(kInd, macdOf(allCloses));
     if(kShowRSI){ kInd.r6 = rsiOf(allCloses, 6); kInd.r12 = rsiOf(allCloses, 12); kInd.r24 = rsiOf(allCloses, 24); }
     if(kShowBOLL) kInd.boll = bollOf(allCloses);
     if(kShowKDJ)  kInd.kdj  = kdjOf(klines);
+    if(kShowOBV)  kInd.obv  = obvOf(klines);
   }
 
   let hi = -Infinity, lo = Infinity, vmax = 0;
@@ -953,7 +972,7 @@ function drawKline(){
 
   // 子图分隔线 + 面板名
   g.font = "10px ui-monospace,Menlo,monospace";
-  [volTop, kShowMACD && macdTop, kShowRSI && rsiTop, kShowKDJ && kdjTop].filter(Boolean).forEach(y => {
+  [volTop, kShowMACD && macdTop, kShowRSI && rsiTop, kShowKDJ && kdjTop, kShowOBV && obvTop].filter(Boolean).forEach(y => {
     g.strokeStyle = "rgba(43,49,57,.5)";
     g.beginPath(); g.moveTo(padL, y - 4); g.lineTo(padL + cw, y - 4); g.stroke();
   });
@@ -1061,6 +1080,36 @@ function drawKline(){
     g.fillText(fmt(dLo, 1), padL + cw + 6, kdjTop + kdjH - 2);
   }
 
+  // OBV 子图：能量潮主线（黄）+ 30 周期信号均线（紫），自动量程
+  if(kShowOBV && kInd && kInd.obv){
+    let oHi = -Infinity, oLo = Infinity;
+    for(let i = 0; i < vis.length; i++){
+      const idx = start + i;
+      for(const v of [kInd.obv.obv[idx], kInd.obv.signal[idx]]){
+        if(v === null) continue;
+        if(v > oHi) oHi = v;
+        if(v < oLo) oLo = v;
+      }
+    }
+    if(oHi === oLo){ oHi += 1; oLo -= 1; }
+    const oyOf = v => obvTop + obvH - (v - oLo) / (oHi - oLo) * obvH;
+    [[kInd.obv.obv, "#f0b90b"], [kInd.obv.signal, "#c084fc"]].forEach(([arr, color]) => {
+      g.strokeStyle = color; g.lineWidth = 1.2; g.beginPath();
+      let started = false;
+      vis.forEach((_, i) => {
+        const v = arr[start + i];
+        if(v === null) return;
+        const x = padL + slot * (i + 0.5), y = oyOf(v);
+        if(!started){ g.moveTo(x, y); started = true; } else g.lineTo(x, y);
+      });
+      g.stroke();
+    });
+    g.fillStyle = "#848e9c"; g.textAlign = "left";
+    g.fillText("OBV · MA30", padL + 4, obvTop + 9);
+    g.fillText(fmt(oHi, 0), padL + cw + 6, obvTop + 4);
+    g.fillText(fmt(oLo, 0), padL + cw + 6, obvTop + obvH - 2);
+  }
+
   // 最新价虚线（只在窗口包含最新一根时画）
   if(start + vis.length >= klines.length){
     const yLast = yOf(klines[klines.length - 1].c);
@@ -1075,7 +1124,7 @@ function drawKline(){
   kBase.width = cv.width; kBase.height = cv.height;
   kBase.getContext("2d").drawImage(cv, 0, 0);
   kLayout = { W, H, padL, padR, padT, padB, cw, slot, priceTop, priceBottom, hi, lo, start, count: vis.length,
-              chartBottom: kShowKDJ ? kdjTop + kdjH : kShowRSI ? rsiTop + rsiH : kShowMACD ? macdTop + macdH : volTop + volH };
+              chartBottom: kShowOBV ? obvTop + obvH : kShowKDJ ? kdjTop + kdjH : kShowRSI ? rsiTop + rsiH : kShowMACD ? macdTop + macdH : volTop + volH };
 
   // 每 15 秒刷新数据后会重画底图；若鼠标仍停在图上，重绘十字光标，避免闪烁消失
   if(kMouse && kHover >= 0 && kHover >= start && kHover < start + vis.length){
@@ -1175,6 +1224,10 @@ function drawHover(idx, my){
     rows.push(["K", fmt(kInd.kdj.k[idx], 1), "#f0b90b"]);
     rows.push(["D", fmt(kInd.kdj.d[idx], 1), "#c084fc"]);
     rows.push(["J", fmt(kInd.kdj.j[idx], 1), "#5b8af0"]);
+  }
+  if(kInd && kInd.obv){
+    rows.push(["OBV", fmt(kInd.obv.obv[idx], 0), "#f0b90b"]);
+    if(kInd.obv.signal[idx] !== null) rows.push(["OBV均", fmt(kInd.obv.signal[idx], 0), "#c084fc"]);
   }
   const bw = 152, bh = rows.length * 17 + 16;
   let bx = x + 14;
@@ -1927,7 +1980,8 @@ document.getElementById("indBtns").addEventListener("click", e=>{
   if(ind === "macd")      kShowMACD = !kShowMACD;
   else if(ind === "rsi")  kShowRSI  = !kShowRSI;
   else if(ind === "boll") kShowBOLL = !kShowBOLL;
-  else                    kShowKDJ  = !kShowKDJ;
+  else if(ind === "kdj")  kShowKDJ  = !kShowKDJ;
+  else                    kShowOBV  = !kShowOBV;
   b.classList.toggle("on");
   drawKline();
 });
