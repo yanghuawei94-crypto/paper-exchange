@@ -543,6 +543,8 @@ tbody tr:hover{background:var(--panel2)}
         <button data-time="30d">近 30 天</button>
         <button class="trade-btn" data-reset="1" style="margin-left:auto">清空筛选</button>
       </div>
+      <!-- 订单统计图：跟随上方筛选，按日汇总成交额（买入绿 / 卖出红 堆叠） -->
+      <div class="chart-box" style="height:140px;margin-bottom:10px"><canvas id="orderStatsCanvas"></canvas></div>
       <table>
         <thead><tr><th>时间</th><th>交易对</th><th>方向</th><th>类型</th><th>价格</th><th>数量</th><th>成交额</th><th>手续费</th></tr></thead>
         <tbody id="ordersBody"></tbody>
@@ -596,7 +598,7 @@ tbody tr:hover{background:var(--panel2)}
   </section>
 
   <div class="foot">
-    模拟交易所 · Paper Exchange — 仅用于界面与流程演示 · build <span id="buildVer">20261029-20</span><br>
+    模拟交易所 · Paper Exchange — 仅用于界面与流程演示 · build <span id="buildVer">20261030-21</span><br>
     不构成投资建议，不涉及真实资金、真实交易、真实收益
   </div>
 </div>
@@ -2751,6 +2753,72 @@ function filteredOrders(){
   return list;
 }
 
+// 订单统计图：按日堆叠成交额（买入绿 / 卖出红），跟随 filteredOrders 同一份数据
+function drawOrderStats(list){
+  const cv = document.getElementById("orderStatsCanvas");
+  if(!cv) return;
+  const box = cv.parentElement;
+  const W = box.clientWidth, H = box.clientHeight;
+  if(W <= 0 || H <= 0) return;               // 订单页未激活时不画
+  const dpr = window.devicePixelRatio || 1;
+  cv.width = W * dpr; cv.height = H * dpr;
+  const g = cv.getContext("2d");
+  g.setTransform(dpr, 0, 0, dpr, 0, 0);
+  g.clearRect(0, 0, W, H);
+
+  // 按日聚合买卖成交额；订单保留最近 200 条，天数有限，MM-DD 字符串排序即可
+  const byDay = {};
+  for(const o of list){
+    const day = (o.t || "").slice(0, 5);
+    if(!day) continue;
+    const d = byDay[day] || (byDay[day] = { buy:0, sell:0 });
+    d[o.side === "buy" ? "buy" : "sell"] += (typeof o.amount === "number" ? o.amount : 0);
+  }
+  const days = Object.keys(byDay).sort();
+  g.font = "11px sans-serif";
+  if(!days.length){
+    g.fillStyle = "#848e9c"; g.textAlign = "center";
+    g.fillText("当前筛选下暂无成交数据", W / 2, H / 2);
+    return;
+  }
+
+  const padL = 46, padR = 10, padT = 20, padB = 20;
+  const cw = W - padL - padR, ch = H - padT - padB;
+  const maxV = Math.max(...days.map(d => byDay[d].buy + byDay[d].sell), 1);
+  const y = v => padT + ch - (v / maxV) * ch;
+
+  // 网格线 + 左侧金额刻度
+  g.strokeStyle = "rgba(43,49,57,.6)";
+  [0, maxV / 2, maxV].forEach(v=>{
+    const yy = y(v);
+    g.beginPath(); g.moveTo(padL, yy); g.lineTo(W - padR, yy); g.stroke();
+    g.fillStyle = "#848e9c"; g.textAlign = "right";
+    g.fillText(fmt(v, v >= 1000 ? 0 : 2), padL - 6, yy + 3);
+  });
+
+  // 堆叠柱：买入在底部（绿），卖出堆在上（红）
+  const n = days.length, slot = cw / n, bw = Math.min(28, slot * 0.6);
+  days.forEach((d, i)=>{
+    const cx = padL + slot * i + slot / 2;
+    const { buy, sell } = byDay[d];
+    const bh = (buy / maxV) * ch, sh = (sell / maxV) * ch;
+    if(bh > 0){ g.fillStyle = "#0ecb81"; g.fillRect(cx - bw/2, y(buy), bw, bh); }
+    if(sh > 0){ g.fillStyle = "#f6465d"; g.fillRect(cx - bw/2, y(buy + sell), bw, sh); }
+    // X 轴日期标签：超过 6 天均匀抽稀
+    if(n <= 6 || i % Math.ceil(n / 6) === 0){
+      g.fillStyle = "#848e9c"; g.textAlign = "center";
+      g.fillText(d, cx, H - 5);
+    }
+  });
+
+  // 顶部图例
+  g.textAlign = "left";
+  g.fillStyle = "#0ecb81"; g.fillRect(padL, 4, 8, 8);
+  g.fillStyle = "#848e9c"; g.fillText("买入成交额", padL + 12, 11);
+  g.fillStyle = "#f6465d"; g.fillRect(padL + 92, 4, 8, 8);
+  g.fillStyle = "#848e9c"; g.fillText("卖出成交额", padL + 104, 11);
+}
+
 function renderOrders(){
   const tb = document.getElementById("ordersBody");
   const list = filteredOrders();
@@ -2783,6 +2851,8 @@ function renderOrders(){
       ? `当前筛选合计：${list.length} 笔（买入 ${buyN} / 卖出 ${sellN}）· 成交额 ${fmt(sumAmt, 2)} USDT · 手续费 ${fmt(sumFee, 4)} USDT`
       : "当前筛选下无订单";
   }
+  // 统计图与列表/导出用同一份筛选结果，看到什么就画什么
+  drawOrderStats(list);
 }
 
 // 订单筛选按钮
