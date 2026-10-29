@@ -555,7 +555,7 @@ tbody tr:hover{background:var(--panel2)}
   </section>
 
   <div class="foot">
-    模拟交易所 · Paper Exchange — 仅用于界面与流程演示 · build <span id="buildVer">20261029-16</span><br>
+    模拟交易所 · Paper Exchange — 仅用于界面与流程演示 · build <span id="buildVer">20261029-17</span><br>
     不构成投资建议，不涉及真实资金、真实交易、真实收益
   </div>
 </div>
@@ -2525,7 +2525,9 @@ function renderFutures(){
   upEl.textContent = futFmtSign(upnl) + " USDT";
   upEl.className = "kpi " + (upnl > 0 ? "up" : upnl < 0 ? "down" : "mid");
   document.getElementById("fMargin").textContent = fmt(marginSum, 2) + " USDT";
-  document.getElementById("fFundNext").textContent = "每 8 小时 · " + futNextFunding();
+  const fundPaidSum = state.futFundings.filter(f=>f.direction === "pay").reduce((s,f)=> s + f.amt, 0);
+  const fundRecvSum = state.futFundings.filter(f=>f.direction === "recv").reduce((s,f)=> s + f.amt, 0);
+  document.getElementById("fFundNext").textContent = futFundingSub(fundPaidSum, fundRecvSum);
 
   const tb = document.getElementById("futPosBody");
   tb.innerHTML = state.futures.length ? state.futures.slice().reverse().map(pos=>{
@@ -2598,10 +2600,8 @@ function renderFutures(){
       <td class="${pay?"down":"up"}">${pay ? "-" : "+"}${fmt(f.amt, 4)}</td>
     </tr>`;
   }).join("") : `<tr><td colspan="6" class="empty" style="text-align:center">暂无资金费结算（每满 8 小时结算一次）</td></tr>`;
-  const paid = state.futFundings.filter(f=>f.direction === "pay").reduce((s,f)=> s + f.amt, 0);
-  const recv = state.futFundings.filter(f=>f.direction === "recv").reduce((s,f)=> s + f.amt, 0);
-  document.getElementById("fundPaid").textContent = fmt(paid, 4);
-  document.getElementById("fundRecv").textContent = fmt(recv, 4);
+  document.getElementById("fundPaid").textContent = fmt(fundPaidSum, 4);
+  document.getElementById("fundRecv").textContent = fmt(fundRecvSum, 4);
 
   // 限价委托价输入框显隐
   document.getElementById("fLimitRow").style.display = fotype === "limit" ? "" : "none";
@@ -2835,12 +2835,16 @@ function renderFuturesPreview(){
   btn.className = "submit " + (fSide === "long" ? "buy" : "sell");
 }
 
-function futNextFunding(){
-  if(!state.futures.length) return "暂无持仓";
-  const next = Math.min(...state.futures.map(p => p.lastFundAt + FUT_FUND_MS));
-  const ms = Math.max(0, next - Date.now());
-  const h = Math.floor(ms / 3600000), m = Math.floor(ms % 3600000 / 60000);
-  return `下次结算 ${h}h ${m}m 后`;
+// 资金费率 KPI 的副标题：有持仓显示倒计时，无持仓显示累计金额，从未结算过则显示规则
+function futFundingSub(paid, recv){
+  if(state.futures.length){
+    const next = Math.min(...state.futures.map(p => p.lastFundAt + FUT_FUND_MS));
+    const ms = Math.max(0, next - Date.now());
+    const h = Math.floor(ms / 3600000), m = Math.floor(ms % 3600000 / 60000);
+    return `每 8 小时 · 下次结算 ${h}h ${m}m 后`;
+  }
+  if(paid + recv > 0) return `累计已付 ${fmt(paid, 4)} · 已收 ${fmt(recv, 4)} USDT`;
+  return "每 8 小时结算 · 多付空收";
 }
 
 // 开仓：保证金 + 开仓手续费从可用 USDT 扣除；保证金之后只存在于持仓里
