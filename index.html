@@ -338,7 +338,10 @@ tbody tr:hover{background:var(--panel2)}
     </div>
     <div class="card" style="margin-bottom:12px">
       <h3>资产分布</h3>
-      <div id="allocBars"></div>
+      <div style="display:flex;gap:18px;align-items:center;flex-wrap:wrap">
+        <div style="position:relative;width:170px;height:170px;flex:0 0 170px"><canvas id="allocPie" style="display:block;width:100%;height:100%"></canvas></div>
+        <div id="allocBars" style="flex:1;min-width:220px"></div>
+      </div>
     </div>
     <div class="card">
       <h3>持仓明细</h3>
@@ -423,7 +426,7 @@ tbody tr:hover{background:var(--panel2)}
   </section>
 
   <div class="foot">
-    模拟交易所 · Paper Exchange — 仅用于界面与流程演示 · build <span id="buildVer">20261029-6</span><br>
+    模拟交易所 · Paper Exchange — 仅用于界面与流程演示 · build <span id="buildVer">20261029-7</span><br>
     不构成投资建议，不涉及真实资金、真实交易、真实收益
   </div>
 </div>
@@ -1555,27 +1558,78 @@ function updateTradeCalc(){
 }
 
 /* ---------- 渲染：资产 ---------- */
+// 资产分布环形图：纯 Canvas 2D 手绘，不引第三方库
+const ALLOC_COLORS = ["#f0b90b","#0ecb81","#4a9eff","#f6465d","#2dc7c9","#e8a33d","#8fa3b8","#b07cf0"];
+
+function drawAllocPie(parts, sum){
+  const cv = document.getElementById("allocPie");
+  if(!cv) return;
+  const box = cv.parentElement;
+  const W = box.clientWidth, H = box.clientHeight;
+  if(W <= 0 || H <= 0) return;                    // 资产页未激活时不画，等 5 秒定时器那轮
+  const dpr = window.devicePixelRatio || 1;
+  cv.width = Math.round(W*dpr); cv.height = Math.round(H*dpr);
+  const g = cv.getContext("2d");
+  g.setTransform(dpr, 0, 0, dpr, 0, 0);
+  g.clearRect(0, 0, W, H);
+
+  const cx = W/2, cy = H/2;
+  const R = Math.min(W, H)/2 - 6, r = R*0.62;
+
+  if(!parts.length || !(sum > 0)){
+    g.beginPath(); g.arc(cx, cy, R, 0, Math.PI*2);
+    g.strokeStyle = "#2b3139"; g.lineWidth = 1; g.stroke();
+    g.fillStyle = "#848e9c"; g.font = "11px sans-serif"; g.textAlign = "center";
+    g.fillText("暂无资产", cx, cy + 4);
+    return;
+  }
+
+  // 扇形：从 12 点方向顺时针，环形（外弧 + 内弧反向）
+  let acc = -Math.PI/2;
+  for(const p of parts){
+    const ang = p.v / sum * Math.PI * 2;
+    g.beginPath();
+    g.arc(cx, cy, R, acc, acc + ang);
+    g.arc(cx, cy, r, acc + ang, acc, true);
+    g.closePath();
+    g.fillStyle = p.color;
+    g.fill();
+    if(parts.length > 1){ g.strokeStyle = "#151a21"; g.lineWidth = 2; g.stroke(); }  // 描边留缝，区分相邻扇区
+    acc += ang;
+  }
+
+  // 圆心文字
+  g.textAlign = "center";
+  g.fillStyle = "#eaecef"; g.font = "600 15px sans-serif";
+  g.fillText(fmt(sum, 0), cx, cy + 2);
+  g.fillStyle = "#848e9c"; g.font = "10px sans-serif";
+  g.fillText("总资产 USDT", cx, cy + 18);
+}
+
 function renderAssets(){
   document.getElementById("aTotal").textContent = fmt(totalAssets(),2) + " USDT";
   document.getElementById("aUsdt").textContent  = fmt(state.usdt,2) + " USDT";
   document.getElementById("aEarn").textContent  = fmt(earnPrincipalValue() + earnAccruedTotal(),2) + " USDT";
 
-  // 分布条
+  // 分布：环形图 + 图例条（颜色在 Canvas 里要用实色，统一走 ALLOC_COLORS）
   const parts = [];
-  parts.push({ label:"USDT", v: state.usdt, color:"var(--yellow)" });
+  let ci = 1;
+  parts.push({ label:"USDT", v: state.usdt, color: ALLOC_COLORS[0] });
   for(const c of COINS){
     const v = holdValue(c.base);
-    if(v > 0) parts.push({ label:c.base, v, color:"var(--green)" });
+    if(v > 0) parts.push({ label:c.base, v, color: ALLOC_COLORS[ci++ % ALLOC_COLORS.length] });
   }
   const ev = earnPrincipalValue() + earnAccruedTotal();
   if(ev > 0) parts.push({ label:"理财", v:ev, color:"#c084fc" });
 
-  const sum = parts.reduce((s,x)=>s+x.v,0) || 1;
+  const total = parts.reduce((s,x)=>s+x.v,0);
+  const sum = total || 1;              // 仅作百分比分母，避免除零
+  drawAllocPie(parts, total);          // 环心显示真实总额，为 0 时走「暂无资产」空态
   document.getElementById("allocBars").innerHTML = parts.map(x=>{
     const pct = x.v / sum * 100;
     return `<div style="margin-bottom:8px">
-      <div style="display:flex;justify-content:space-between;font-size:12px">
-        <span>${x.label}</span>
+      <div style="display:flex;justify-content:space-between;font-size:12px;align-items:center">
+        <span><i style="display:inline-block;width:8px;height:8px;border-radius:2px;background:${x.color};margin-right:6px;vertical-align:middle"></i>${x.label}</span>
         <span class="mid">${fmt(x.v,2)} · ${fmt(pct,1)}%</span>
       </div>
       <div class="bar"><i style="width:${pct}%;background:${x.color}"></i></div>
@@ -2131,7 +2185,7 @@ document.getElementById("indBtns").addEventListener("click", e=>{
 // 窗口尺寸变化时重绘（节流）
 window.addEventListener("resize", ()=>{
   clearTimeout(window._klineTimer);
-  window._klineTimer = setTimeout(()=>{ drawKline(); drawPnl(); }, 150);
+  window._klineTimer = setTimeout(()=>{ drawKline(); drawPnl(); renderAssets(); }, 150);
 });
 
 // 盈亏走势图 hover：按 x 坐标找最近采样点
