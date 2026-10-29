@@ -618,7 +618,7 @@ tbody tr:hover{background:var(--panel2)}
   </section>
 
   <div class="foot">
-    模拟交易所 · Paper Exchange — 仅用于界面与流程演示 · build <span id="buildVer">20261030-22</span><br>
+    模拟交易所 · Paper Exchange — 仅用于界面与流程演示 · build <span id="buildVer">20261030-23</span><br>
     不构成投资建议，不涉及真实资金、真实交易、真实收益
   </div>
 </div>
@@ -2961,6 +2961,46 @@ function exportOrdersCsv(){
 }
 document.getElementById("btnExportCsv").addEventListener("click", exportOrdersCsv);
 
+/* ---------- 强平预警 ---------- */
+// 保证金裕度 = (权益 - 维持保证金) / 维持保证金；裕度 ≤ 0 即触发强平。全仓按共用池整体计算
+function liqBuffer(pos){
+  if(pos.marginMode === "cross"){
+    const pool = state.futures.filter(p => p.marginMode === "cross");
+    const eq = pool.reduce((s,p)=> s + p.margin + futUpnl(p), 0);
+    const mm = pool.reduce((s,p)=> s + futMaintMargin(p), 0);
+    return mm > 0 ? (eq - mm) / mm : null;
+  }
+  const mm = futMaintMargin(pos);
+  return mm > 0 ? (pos.margin + futUpnl(pos) - mm) / mm : null;
+}
+
+// 已提醒过的仓位 key（全仓共用池共用一个 "cross" key）。
+// 裕度回升到 15% 以上才重置，避免价格在阈值附近抖动时重复刷屏
+const liqWarned = new Set();
+function checkLiqWarnings(){
+  for(const pos of state.futures){
+    const b = liqBuffer(pos);
+    if(b === null) continue;
+    const key = pos.marginMode === "cross" ? "cross" : pos.id;
+    if(b < 0.10){
+      if(!liqWarned.has(key)){
+        liqWarned.add(key);
+        const label = key === "cross" ? "全仓共用池" : `${pos.base} ${futSideLabel(pos.side)}`;
+        toast(`⚠️ 强平预警：${label} 保证金裕度不足 10%（当前 ${(b*100).toFixed(1)}%），请追加保证金或减仓`, "err");
+      }
+    }else if(b > 0.15){
+      liqWarned.delete(key);
+    }
+  }
+  // 清理已平掉的仓位 key，避免集合越积越大
+  for(const key of [...liqWarned]){
+    const alive = key === "cross"
+      ? state.futures.some(p => p.marginMode === "cross")
+      : state.futures.some(p => p.id === key);
+    if(!alive) liqWarned.delete(key);
+  }
+}
+
 /* ---------- 渲染：合约 ---------- */
 function renderFutures(){
   const upnl = state.futures.reduce((s,p)=> s + futUpnl(p), 0);
@@ -2981,7 +3021,11 @@ function renderFutures(){
     const cls = u > 0 ? "up" : u < 0 ? "down" : "mid";
     const isCross = pos.marginMode === "cross";
     const tpsl = (pos.tp ? "TP " + fmtPx(pos.tp) : "—") + " / " + (pos.sl ? "SL " + fmtPx(pos.sl) : "—");
-    return `<tr>
+    // 强平预警：裕度 <10% 红色高亮，10%~20% 黄色提示，行内 ⚠ 标记 + 整行底色
+    const buf = liqBuffer(pos);
+    const warnLv = buf === null ? 0 : buf < 0.10 ? 2 : buf < 0.20 ? 1 : 0;
+    const rowStyle = warnLv === 2 ? ` style="background:rgba(246,70,93,.08)"` : warnLv === 1 ? ` style="background:rgba(240,185,11,.06)"` : "";
+    return `<tr${rowStyle}>
       <td>${pos.base}</td>
       <td class="${pos.side==="long"?"up":"down"}">${futSideLabel(pos.side)}</td>
       <td>${pos.lev}x <span class="mid" style="font-size:10px">${isCross ? "全仓" : "逐仓"}</span></td>
@@ -2990,7 +3034,7 @@ function renderFutures(){
       <td>${fmtPx(p)}</td>
       <td>${fmt(pos.margin,2)}</td>
       <td class="${cls}">${futFmtSign(u)}</td>
-      <td class="mid" title="维持保证金 ${fmt(futMaintMargin(pos), 2)} USDT · ${futTierOf(futNotional(pos)).label} ${(futTierOf(futNotional(pos)).mmr*100).toFixed(1)}%">${isCross ? "共用池" : fmtPx(futLiqPrice(pos))}</td>
+      <td class="${warnLv === 2 ? "down" : "mid"}"${warnLv === 1 ? ` style="color:var(--yellow)"` : ""} title="维持保证金 ${fmt(futMaintMargin(pos), 2)} USDT · ${futTierOf(futNotional(pos)).label} ${(futTierOf(futNotional(pos)).mmr*100).toFixed(1)}%${buf === null ? "" : ` · 裕度 ${(buf*100).toFixed(1)}%`}">${warnLv ? "⚠ " : ""}${isCross ? "共用池" : fmtPx(futLiqPrice(pos))}</td>
       <td class="mid" style="font-size:11px">${tpsl}</td>
       <td style="white-space:normal;min-width:160px">
         <button class="trade-btn" data-close-fut="${pos.id}">平仓</button>
@@ -3063,6 +3107,7 @@ function renderFutures(){
   // 限价委托价输入框显隐
   document.getElementById("fLimitRow").style.display = fotype === "limit" ? "" : "none";
   renderFuturesPreview();
+  checkLiqWarnings();   // 强平预警：进入危险区toast一次，恢复后重置
 }
 
 /* ---------- 总渲染 ---------- */
