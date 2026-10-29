@@ -346,8 +346,19 @@ tbody tr:hover{background:var(--panel2)}
         <thead><tr><th>币种</th><th>数量</th><th>成本均价</th><th>最新价</th><th>市值</th><th>浮盈亏</th></tr></thead>
         <tbody id="assetBody"></tbody>
       </table>
-      <div style="margin-top:14px;display:flex;gap:8px;flex-wrap:wrap">
-        <button class="trade-btn" id="btnAddFunds">模拟充值 +1,000 USDT</button>
+      <div style="margin-top:14px;display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+        <div class="field" style="margin:0;flex:0 0 170px">
+          <div class="row">
+            <input id="fundAmt" type="number" min="1" step="100" value="1000" inputmode="decimal" aria-label="充值金额">
+            <span class="unit">USDT</span>
+          </div>
+        </div>
+        <span class="tf" id="fundPresets">
+          <button data-fund="1000">1,000</button>
+          <button data-fund="5000">5,000</button>
+          <button data-fund="10000">10,000</button>
+        </span>
+        <button class="trade-btn" id="btnAddFunds">模拟充值</button>
         <button class="trade-btn" id="btnReset" style="border-color:var(--red);color:var(--red)">重置全部数据</button>
       </div>
     </div>
@@ -412,7 +423,7 @@ tbody tr:hover{background:var(--panel2)}
   </section>
 
   <div class="foot">
-    模拟交易所 · Paper Exchange — 仅用于界面与流程演示 · build <span id="buildVer">20261029-5</span><br>
+    模拟交易所 · Paper Exchange — 仅用于界面与流程演示 · build <span id="buildVer">20261029-6</span><br>
     不构成投资建议，不涉及真实资金、真实交易、真实收益
   </div>
 </div>
@@ -1691,8 +1702,10 @@ function drawPnl(){
     (t => { const d = new Date(t), p = n => String(n).padStart(2,"0"); return (d.getMonth()+1) + "-" + p(d.getDate()) + " " + p(d.getHours()) + ":" + p(d.getMinutes()); });
   g.fillStyle = "#848e9c"; g.textAlign = "left";
   g.fillText(fmtT(hist[0].t), padL, H - 6);
-  g.textAlign = "center";
-  g.fillText(fmtT(hist[Math.floor(hist.length/2)].t), x(Math.floor(hist.length/2)), H - 6);
+  if(hist.length > 2){
+    g.textAlign = "center";
+    g.fillText(fmtT(hist[Math.floor(hist.length/2)].t), x(Math.floor(hist.length/2)), H - 6);
+  }
   g.textAlign = "right";
   g.fillText(fmtT(hist[hist.length-1].t), W - padR, H - 6);
 
@@ -2220,17 +2233,26 @@ document.getElementById("plans").addEventListener("click", e=>{
   if(b && !b.disabled) setPlan(b.dataset.plan);
 });
 
+// 充值金额快捷填充
+document.getElementById("fundPresets").addEventListener("click", e=>{
+  const b = e.target.closest("[data-fund]");
+  if(b) document.getElementById("fundAmt").value = b.dataset.fund;
+});
+
 document.getElementById("btnAddFunds").addEventListener("click", ()=>{
+  const amt = Math.floor(parseFloat(document.getElementById("fundAmt").value));
+  if(!isFinite(amt) || amt <= 0){ toast("请输入大于 0 的充值金额", "err"); return; }
+  if(amt > 1000000){ toast("单次充值上限 1,000,000 USDT", "err"); return; }
   load();                    // 先读最新存档，防止覆盖其他标签页的改动
-  state.usdt += 1000;
-  state.deposited += 1000;   // 充值计入净投入，不被算成盈利
+  state.usdt += amt;
+  state.deposited += amt;    // 充值计入净投入，不被算成盈利
   save(); renderAll();
-  toast("已模拟充值 +1,000 USDT（已计入净投入）", "ok");
+  toast("已模拟充值 +" + fmt(amt, 0) + " USDT（已计入净投入）", "ok");
 });
 
 // 跨标签页同步：别的标签写入存档时，本页立即拉取最新状态，避免旧数据互相覆盖
 window.addEventListener("storage", e=>{
-  if(e.key === STORE_KEY){ load(); renderAll(); }
+  if(e.key === STORE_KEY || e.key === DEP_KEY){ load(); renderAll(); }
 });
 
 document.getElementById("btnReset").addEventListener("click", ()=>{
