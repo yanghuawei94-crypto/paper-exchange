@@ -397,11 +397,32 @@ tbody tr:hover{background:var(--panel2)}
       </div>
 
       <div class="card">
-        <h3>当前合约持仓 <span class="mid" style="font-weight:400;font-size:11px">平仓按最新标记价成交 · 止盈止损/强平自动触发</span></h3>
+        <div style="display:flex;justify-content:space-between;align-items:baseline;gap:8px">
+          <h3>当前合约持仓 <span class="mid" style="font-weight:400;font-size:11px">平仓按最新标记价成交 · 止盈止损/强平自动触发</span></h3>
+          <button class="trade-btn" id="fCloseAllBtn" style="flex:none;margin-bottom:10px">全部平仓</button>
+        </div>
         <table>
           <thead><tr><th>币种</th><th>方向</th><th>杠杆</th><th>数量</th><th>开仓价</th><th>标记价</th><th>保证金</th><th>未实现盈亏</th><th>强平价</th><th>止盈 / 止损</th><th>操作</th></tr></thead>
           <tbody id="futPosBody"></tbody>
         </table>
+        <!-- 部分平仓面板：点持仓行的「平仓」后展开，默认整仓，可改数量或点百分比 -->
+        <div id="pClosePanel" class="hidden" style="background:var(--panel2);border:1px solid var(--border);border-radius:var(--r);padding:12px;margin-top:10px">
+          <div class="sub" id="pCloseInfo" style="margin-bottom:10px"></div>
+          <div class="pcts" id="pClosePct">
+            <button data-pcpct="0.25">25%</button>
+            <button data-pcpct="0.5">50%</button>
+            <button data-pcpct="0.75">75%</button>
+            <button data-pcpct="1">100%</button>
+          </div>
+          <div class="field" style="margin-bottom:10px">
+            <label for="pCloseQty">平仓数量 <span class="mid" id="pCloseMax"></span></label>
+            <div class="row"><input id="pCloseQty" type="text" inputmode="decimal"><span class="unit" id="pCloseUnit">BTC</span></div>
+          </div>
+          <div style="display:flex;gap:8px">
+            <button class="submit sell" id="pCloseConfirm" style="flex:2;padding:10px">确认平仓</button>
+            <button class="trade-btn" id="pCloseCancel" style="flex:1">取消</button>
+          </div>
+        </div>
         <h3 style="margin-top:20px">合约委托 <span class="mid" style="font-weight:400;font-size:11px">限价开仓 · 触价自动成交</span></h3>
         <table>
           <thead><tr><th>时间</th><th>币种</th><th>方向</th><th>杠杆</th><th>委托价</th><th>保证金</th><th>操作</th></tr></thead>
@@ -555,7 +576,7 @@ tbody tr:hover{background:var(--panel2)}
   </section>
 
   <div class="foot">
-    模拟交易所 · Paper Exchange — 仅用于界面与流程演示 · build <span id="buildVer">20261029-17</span><br>
+    模拟交易所 · Paper Exchange — 仅用于界面与流程演示 · build <span id="buildVer">20261029-18</span><br>
     不构成投资建议，不涉及真实资金、真实交易、真实收益
   </div>
 </div>
@@ -2570,7 +2591,7 @@ function renderFutures(){
 
   const hb = document.getElementById("futHistBody");
   const rows = state.futOrders.slice().reverse();
-  const reasonText = { tp: "止盈", sl: "止损", liq: "强平", limit: "限价", manual: "手动" };
+  const reasonText = { tp: "止盈", sl: "止损", liq: "强平", limit: "限价", manual: "手动", pclose: "部分平仓" };
   hb.innerHTML = rows.length ? rows.map(o=>{
     const pnlCls = o.pnl > 0 ? "up" : o.pnl < 0 ? "down" : "mid";
     const kind = o.kind === "open" ? (o.reason === "limit" ? "开仓(限价)" : "开仓") : `平仓(${reasonText[o.reason || "manual"] || "手动"})`;
@@ -2602,6 +2623,12 @@ function renderFutures(){
   }).join("") : `<tr><td colspan="6" class="empty" style="text-align:center">暂无资金费结算（每满 8 小时结算一次）</td></tr>`;
   document.getElementById("fundPaid").textContent = fmt(fundPaidSum, 4);
   document.getElementById("fundRecv").textContent = fmt(fundRecvSum, 4);
+
+  // 部分平仓面板：持仓被平掉/强平后自动收起，仍在则刷新数量与保证金
+  if(pCloseId){
+    if(state.futures.some(p => p.id === pCloseId)) refreshPartialPanel();
+    else closePartialPanel();
+  }
 
   // 限价委托价输入框显隐
   document.getElementById("fLimitRow").style.display = fotype === "limit" ? "" : "none";
@@ -3022,6 +3049,17 @@ function checkLiquidation(){
   return n;
 }
 
+// 平仓金额结算：只算钱，不改持仓。closeQty 可小于持仓数量（部分平仓）
+// 保证金按平仓比例切分，亏损上限也就是这一份保证金
+function futSettle(pos, closeQty){
+  const p = priceOf(pos.base);
+  const marginPart = pos.margin * (closeQty / pos.qty);
+  const gross = (p - pos.entry) * closeQty * (pos.side === "long" ? 1 : -1);
+  const pnl = Math.max(gross, -marginPart);
+  const fee = closeQty * p * FUT_FEE;
+  return { p, marginPart, gross, pnl, fee, back: Math.max(0, marginPart + pnl - fee) };
+}
+
 // 平仓：按标记价结算，返还 = 保证金 + 盈亏 - 平仓手续费；亏损不超过保证金
 // reason: 'manual'(默认) / 'tp' / 'sl' / 'liq'
 // forcedBack：全仓批量强平时由调用方指定返还额（已按池权益分摊），传了就覆盖默认计算
@@ -3029,19 +3067,101 @@ function closeFutures(id, reason, forcedBack){
   const i = state.futures.findIndex(p => p.id === id);
   if(i < 0) return;
   const pos = state.futures[i];
-  const p = priceOf(pos.base);
-  const gross = (p - pos.entry) * pos.qty * (pos.side === "long" ? 1 : -1);
-  const pnl = Math.max(gross, -pos.margin);
-  const fee = pos.qty * p * FUT_FEE;
-  const back = forcedBack !== undefined ? Math.max(0, forcedBack) : Math.max(0, pos.margin + pnl - fee);
+  const s = futSettle(pos, pos.qty);
+  const back = forcedBack !== undefined ? Math.max(0, forcedBack) : s.back;
   state.usdt += back;
   state.futures.splice(i, 1);
-  state.futOrders.push({ t: nowT(), base: pos.base, side: pos.side, kind: "close", price: p, qty: pos.qty, pnl, fee, reason: reason || "manual" });
+  state.futOrders.push({ t: nowT(), base: pos.base, side: pos.side, kind: "close", price: s.p, qty: pos.qty, pnl: s.pnl, fee: s.fee, reason: reason || "manual" });
   if(state.futOrders.length > FUT_HIST_MAX) state.futOrders = state.futOrders.slice(-FUT_HIST_MAX);
   save();
   renderAll();
   const reasonText = { tp: "止盈", sl: "止损", liq: "强平", manual: "平仓" }[reason || "manual"];
-  toast(`${reasonText} ${pos.base} ${futSideLabel(pos.side)} · 返还 ${fmt(back, 2)} USDT · 盈亏 ${futFmtSign(pnl)}`, pnl >= 0 ? "ok" : "err");
+  toast(`${reasonText} ${pos.base} ${futSideLabel(pos.side)} · 返还 ${fmt(back, 2)} USDT · 盈亏 ${futFmtSign(s.pnl)}`, s.pnl >= 0 ? "ok" : "err");
+}
+
+// 部分平仓：按数量平掉一部分，剩余持仓的开仓价不变、保证金按比例扣减
+function closeFuturesPartial(id, qty){
+  const pos = state.futures.find(p => p.id === id);
+  if(!pos) return;
+  if(!(qty > 0)){ toast("平仓数量无效", "err"); return; }
+  if(qty >= pos.qty - 1e-12){ closeFutures(id, "manual"); return; }   // 等于整仓时走整仓路径
+  const s = futSettle(pos, qty);
+  state.usdt += s.back;
+  pos.qty -= qty;
+  pos.margin -= s.marginPart;
+  state.futOrders.push({ t: nowT(), base: pos.base, side: pos.side, kind: "close", price: s.p, qty, pnl: s.pnl, fee: s.fee, reason: "pclose" });
+  if(state.futOrders.length > FUT_HIST_MAX) state.futOrders = state.futOrders.slice(-FUT_HIST_MAX);
+  save();
+  renderAll();
+  toast(`部分平仓 ${pos.base} ${fmtQty(qty, pos.base)} · 返还 ${fmt(s.back, 2)} USDT · 盈亏 ${futFmtSign(s.pnl)}`, s.pnl >= 0 ? "ok" : "err");
+}
+
+// 一键全平：按最新标记价逐个结算，合并成一次 toast
+function closeAllFutures(){
+  if(!state.futures.length){ toast("暂无持仓", "err"); return; }
+  if(!confirm(`确定全部平仓 ${state.futures.length} 个持仓？按最新标记价成交。`)) return;
+  let totalPnl = 0, totalBack = 0, n = 0;
+  for(const pos of [...state.futures]){
+    const s = futSettle(pos, pos.qty);
+    state.usdt += s.back;
+    state.futOrders.push({ t: nowT(), base: pos.base, side: pos.side, kind: "close", price: s.p, qty: pos.qty, pnl: s.pnl, fee: s.fee, reason: "manual" });
+    totalPnl += s.pnl; totalBack += s.back; n++;
+  }
+  state.futures = [];
+  if(state.futOrders.length > FUT_HIST_MAX) state.futOrders = state.futOrders.slice(-FUT_HIST_MAX);
+  save();
+  renderAll();
+  toast(`已全部平仓 ${n} 个持仓 · 返还 ${fmt(totalBack, 2)} USDT · 合计盈亏 ${futFmtSign(totalPnl)}`, totalPnl >= 0 ? "ok" : "err");
+}
+
+/* ---------- 部分平仓面板 ---------- */
+let pCloseId = null;   // 当前正在操作部分平仓的持仓 id
+
+function openPartialClose(id){
+  const pos = state.futures.find(p => p.id === id);
+  if(!pos){ toast("持仓不存在", "err"); return; }
+  pCloseId = id;
+  refreshPartialPanel();
+  setPartialRatio(1);   // 默认整仓，改成想要的数量即可
+  document.getElementById("pClosePanel").classList.remove("hidden");
+}
+
+// 面板文案跟随持仓刷新（数量/保证金/剩余可平数量）
+function refreshPartialPanel(){
+  const pos = state.futures.find(p => p.id === pCloseId);
+  if(!pos){ closePartialPanel(); return; }
+  document.getElementById("pCloseInfo").textContent =
+    `${pos.base} ${futSideLabel(pos.side)} ${pos.lev}x · 持仓 ${fmtQty(pos.qty, pos.base)} ${pos.base} · 保证金 ${fmt(pos.margin, 2)} USDT`;
+  document.getElementById("pCloseMax").textContent = `最多 ${fmtQty(pos.qty, pos.base)} ${pos.base}`;
+  document.getElementById("pCloseUnit").textContent = pos.base;
+}
+
+function closePartialPanel(){
+  pCloseId = null;
+  document.getElementById("pClosePanel").classList.add("hidden");
+  document.getElementById("pCloseQty").value = "";
+}
+
+// 百分比快捷档：向下取整到币种精度，避免四舍五入后略超持仓数量
+function setPartialRatio(r){
+  const pos = state.futures.find(p => p.id === pCloseId);
+  if(!pos) return;
+  const c = COINS.find(x => x.base === pos.base);
+  const prec = c ? c.prec : 6;
+  const unit = Math.pow(10, prec);
+  const q = Math.floor(pos.qty * r * unit) / unit;
+  document.getElementById("pCloseQty").value = q > 0 ? String(q) : String(pos.qty);
+}
+
+function confirmPartialClose(){
+  const pos = state.futures.find(p => p.id === pCloseId);
+  if(!pos){ toast("持仓不存在", "err"); closePartialPanel(); return; }
+  const qty = parseFloat(document.getElementById("pCloseQty").value) || 0;
+  if(!(qty > 0)){ toast("请输入平仓数量", "err"); return; }
+  if(qty > pos.qty){ toast(`超出持仓数量，最多 ${fmtQty(pos.qty, pos.base)} ${pos.base}`, "err"); return; }
+  const id = pCloseId;
+  closePartialPanel();
+  closeFuturesPartial(id, qty);
 }
 
 /* ---------- 理财动作 ---------- */
@@ -3176,9 +3296,20 @@ document.getElementById("fModeBtns").addEventListener("click", e => {
 document.getElementById("fLimitPrice").addEventListener("input", renderFuturesPreview);
 document.getElementById("futPosBody").addEventListener("click", e => {
   let b = e.target.closest("[data-close-fut]");
-  if(b){ closeFutures(b.dataset.closeFut); return; }
+  if(b){ openPartialClose(b.dataset.closeFut); return; }
   b = e.target.closest("[data-tpsl]");
   if(b){ setFutTpSl(b.dataset.tpsl); return; }
+});
+document.getElementById("fCloseAllBtn").addEventListener("click", closeAllFutures);
+document.getElementById("pClosePct").addEventListener("click", e => {
+  const b = e.target.closest("[data-pcpct]");
+  if(!b) return;
+  setPartialRatio(parseFloat(b.dataset.pcpct));
+});
+document.getElementById("pCloseConfirm").addEventListener("click", confirmPartialClose);
+document.getElementById("pCloseCancel").addEventListener("click", closePartialPanel);
+document.getElementById("pCloseQty").addEventListener("keydown", e => {
+  if(e.key === "Enter"){ e.preventDefault(); confirmPartialClose(); }
 });
 document.getElementById("futOrderBody").addEventListener("click", e => {
   const b = e.target.closest("[data-cancel-fut]");
