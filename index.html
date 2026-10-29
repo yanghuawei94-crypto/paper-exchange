@@ -340,7 +340,7 @@ tbody tr:hover{background:var(--panel2)}
     </div>
     <div class="grid trade-grid">
       <div class="card">
-        <h3>开仓 <span class="mid" style="font-weight:400;font-size:11px">手续费 0.05% · 最高 20x</span></h3>
+        <h3>开仓 <span class="mid" style="font-weight:400;font-size:11px">手续费 0.05% · 分档杠杆（名义越大杠杆越低，最高 20x）</span></h3>
         <div class="tf" id="fCoinBtns" style="margin-bottom:12px">
           <button data-fcoin="BTC" class="on">BTC</button>
           <button data-fcoin="ETH">ETH</button>
@@ -390,6 +390,7 @@ tbody tr:hover{background:var(--panel2)}
           <div style="display:flex;justify-content:space-between;margin-bottom:4px"><span class="mid">持仓价值</span><span id="fPrevNotional">0.00 USDT</span></div>
           <div style="display:flex;justify-content:space-between;margin-bottom:4px"><span class="mid">开仓数量</span><span id="fPrevQty">0.00</span></div>
           <div style="display:flex;justify-content:space-between;margin-bottom:4px"><span class="mid">开仓手续费</span><span id="fPrevFee">0.00 USDT</span></div>
+          <div style="display:flex;justify-content:space-between;margin-bottom:4px"><span class="mid">维持保证金</span><span id="fPrevMM">0.00 USDT</span></div>
           <div style="display:flex;justify-content:space-between"><span class="mid">预估强平价</span><span id="fPrevLiq">—</span></div>
         </div>
         <button class="submit buy" id="fOpenBtn">做多 BTC · 5x</button>
@@ -411,7 +412,15 @@ tbody tr:hover{background:var(--panel2)}
           <thead><tr><th>时间</th><th>币种</th><th>方向</th><th>类型</th><th>价格</th><th>数量</th><th>盈亏</th><th>手续费</th></tr></thead>
           <tbody id="futHistBody"></tbody>
         </table>
-        <div class="sub" style="margin-top:12px">仅模拟：不接入真实合约账户。逐仓 = 单仓亏光自身保证金即强平；全仓 = 所有全仓仓位共用保证金池，池权益 ≤ 0 时一次性全部强平。</div>
+        <h3 style="margin-top:20px">资金费记录 <span class="mid" style="font-weight:400;font-size:11px">每 8 小时 · 多付空收 · 最近 30 条</span></h3>
+        <div class="sub" style="margin-bottom:8px">
+          累计已付 <span class="down" id="fundPaid">0.00</span> USDT · 累计已收 <span class="up" id="fundRecv">0.00</span> USDT
+        </div>
+        <table>
+          <thead><tr><th>时间</th><th>币种</th><th>方向</th><th>费率</th><th>期数</th><th>金额</th></tr></thead>
+          <tbody id="fundBody"></tbody>
+        </table>
+        <div class="sub" style="margin-top:12px">仅模拟：不接入真实合约账户。逐仓 = 权益跌破本仓维持保证金即强平；全仓 = 所有全仓仓位共用保证金池，池权益 ≤ 合计维持保证金时一次性全部强平。维持保证金按名义价值分档，名义越大档位越高。</div>
       </div>
     </div>
   </section>
@@ -546,7 +555,7 @@ tbody tr:hover{background:var(--panel2)}
   </section>
 
   <div class="foot">
-    模拟交易所 · Paper Exchange — 仅用于界面与流程演示 · build <span id="buildVer">20261029-15</span><br>
+    模拟交易所 · Paper Exchange — 仅用于界面与流程演示 · build <span id="buildVer">20261029-16</span><br>
     不构成投资建议，不涉及真实资金、真实交易、真实收益
   </div>
 </div>
@@ -588,8 +597,17 @@ const START_USDT = 10000;
 const FUT_FEE = 0.0005;              // 开/平仓手续费 0.05%
 const FUT_FUND_RATE = 0.0001;        // 资金费率 0.01% / 8 小时（多付空收）
 const FUT_FUND_MS = 8 * 3600 * 1000; // 资金费结算周期
-const FUT_MAX_LEV = 20;              // 最高杠杆
+const FUT_MAX_LEV = 20;              // 全局最高杠杆
 const FUT_HIST_MAX = 50;             // 合约记录上限
+// 分档维持保证金率：按名义价值分档，档位越高维持保证金率越高、可用杠杆越低
+// notional 上限 / 维持保证金率 / 该档最大杠杆
+const FUT_TIERS = [
+  { max: 50000,    mmr: 0.004, maxLev: 20, label: "档1" },
+  { max: 250000,   mmr: 0.010, maxLev: 10, label: "档2" },
+  { max: 1000000,  mmr: 0.025, maxLev: 5,  label: "档3" },
+  { max: Infinity, mmr: 0.050, maxLev: 3,  label: "档4" },
+];
+const FUT_FUND_HIST_MAX = 30;        // 资金费记录上限
 
 /* ---------- 状态 ---------- */
 let state = null;
@@ -613,6 +631,7 @@ function defaultState(){
     futures: [],        // 合约持仓 {id, base, side:'long'|'short', qty, entry, lev, margin, fee, openAt, lastFundAt, marginMode?, tp?, sl?}
     futOrders: [],      // 合约开/平仓记录，最近 50 条
     futOpenOrders: [],  // 合约限价开仓委托 {id, t, base, side, lev, margin, price, fee, marginMode?}
+    futFundings: [],    // 资金费结算记录 {t, base, side, rate, periods, amt}
     deposited: 0,       // 「模拟充值」累计额，算盈亏时从总资产里扣除（充值不算盈利）
     createdAt: Date.now(),
   };
@@ -654,6 +673,8 @@ function load(){
   if(!Array.isArray(state.futOrders)) state.futOrders = [];
   state.futOrders = state.futOrders.filter(o => o && typeof o.t === "string" && COINS.some(c => c.base === o.base));
   if(!Array.isArray(state.futOpenOrders)) state.futOpenOrders = [];
+  if(!Array.isArray(state.futFundings)) state.futFundings = [];   // 旧存档无此字段
+  state.futFundings = state.futFundings.filter(f => f && typeof f.t === "string" && typeof f.amt === "number" && isFinite(f.amt));
   state.futOpenOrders = state.futOpenOrders.filter(o => {
     if(!o || !COINS.some(c => c.base === o.base)) return false;
     if(o.side !== "long" && o.side !== "short") return false;
@@ -747,10 +768,32 @@ function futUpnl(pos){
   const d = priceOf(pos.base) - pos.entry;
   return d * pos.qty * (pos.side === "long" ? 1 : -1);
 }
-// 强平价：逐仓 = 亏光本仓保证金的价格；全仓无单独强平价（返回 null，由共用池权益决定）
+// 按名义价值取维持保证金档位
+function futTierOf(notional){
+  return FUT_TIERS.find(t => notional <= t.max) || FUT_TIERS[FUT_TIERS.length - 1];
+}
+// 名义价值：用开仓价固定，避免标记价波动导致档位跳变
+function futNotional(pos){ return pos.qty * pos.entry; }
+// 维持保证金（维持仓位不被强平所需的最低权益）
+function futMaintMargin(pos){
+  const n = futNotional(pos);
+  return n * futTierOf(n).mmr;
+}
+// 在给定保证金下，按分档规则算出实际可用杠杆（降杠杆只会让档位更宽松，最多迭代 3 次即收敛）
+function futMaxLevFor(margin, wanted){
+  let lev = wanted;
+  for(let i = 0; i < 3; i++){
+    const t = futTierOf(margin * lev);
+    if(lev <= t.maxLev) break;
+    lev = t.maxLev;
+  }
+  return lev;
+}
+// 强平价：逐仓 = 权益跌到维持保证金时的价格；全仓无单独强平价（返回 null，由共用池权益决定）
 function futLiqPrice(pos){
   if(pos.marginMode === "cross") return null;
-  const liq = pos.side === "long" ? pos.entry - pos.margin / pos.qty : pos.entry + pos.margin / pos.qty;
+  const buffer = pos.margin - futMaintMargin(pos);   // 可亏的缓冲，跌破维持保证金即强平
+  const liq = pos.side === "long" ? pos.entry - buffer / pos.qty : pos.entry + buffer / pos.qty;
   return Math.max(liq, 0);
 }
 // 合约权益 = 逐仓逐仓位取 max(0, 保证金+未实现盈亏) + 全仓共用池 max(0, Σ(保证金+未实现盈亏))
@@ -2500,7 +2543,7 @@ function renderFutures(){
       <td>${fmtPx(p)}</td>
       <td>${fmt(pos.margin,2)}</td>
       <td class="${cls}">${futFmtSign(u)}</td>
-      <td class="mid">${isCross ? "共用池" : fmtPx(futLiqPrice(pos))}</td>
+      <td class="mid" title="维持保证金 ${fmt(futMaintMargin(pos), 2)} USDT · ${futTierOf(futNotional(pos)).label} ${(futTierOf(futNotional(pos)).mmr*100).toFixed(1)}%">${isCross ? "共用池" : fmtPx(futLiqPrice(pos))}</td>
       <td class="mid" style="font-size:11px">${tpsl}</td>
       <td>
         <button class="trade-btn" data-close-fut="${pos.id}">平仓</button>
@@ -2540,6 +2583,25 @@ function renderFutures(){
       <td class="mid">${fmt(o.fee,2)}</td>
     </tr>`;
   }).join("") : `<tr><td colspan="8" class="empty" style="text-align:center">暂无合约记录</td></tr>`;
+
+  // 资金费流水：多头付出记为已付，空头收取记为已收
+  const fb = document.getElementById("fundBody");
+  const funds = state.futFundings.slice().reverse();
+  fb.innerHTML = funds.length ? funds.map(f=>{
+    const pay = f.direction === "pay";
+    return `<tr>
+      <td class="mid">${f.t}</td>
+      <td>${f.base}</td>
+      <td class="${f.side==="long"?"up":"down"}">${futSideLabel(f.side)}</td>
+      <td class="mid">${(f.rate*100).toFixed(3)}%</td>
+      <td class="mid">${f.periods}</td>
+      <td class="${pay?"down":"up"}">${pay ? "-" : "+"}${fmt(f.amt, 4)}</td>
+    </tr>`;
+  }).join("") : `<tr><td colspan="6" class="empty" style="text-align:center">暂无资金费结算（每满 8 小时结算一次）</td></tr>`;
+  const paid = state.futFundings.filter(f=>f.direction === "pay").reduce((s,f)=> s + f.amt, 0);
+  const recv = state.futFundings.filter(f=>f.direction === "recv").reduce((s,f)=> s + f.amt, 0);
+  document.getElementById("fundPaid").textContent = fmt(paid, 4);
+  document.getElementById("fundRecv").textContent = fmt(recv, 4);
 
   // 限价委托价输入框显隐
   document.getElementById("fLimitRow").style.display = fotype === "limit" ? "" : "none";
@@ -2721,6 +2783,12 @@ function settleFunding(now = Date.now()){
     const amt = pos.qty * pos.entry * FUT_FUND_RATE * periods;
     if(pos.side === "long") pos.margin = Math.max(0, pos.margin - amt);
     else pos.margin += amt;
+    // 记一条资金费流水：多头支付（正数=付出），空头收取
+    state.futFundings.push({
+      t: nowT(), base: pos.base, side: pos.side,
+      rate: FUT_FUND_RATE, periods, amt, direction: pos.side === "long" ? "pay" : "recv",
+    });
+    if(state.futFundings.length > FUT_FUND_HIST_MAX) state.futFundings = state.futFundings.slice(-FUT_FUND_HIST_MAX);
     changed = true;
   }
   if(changed) save();
@@ -2737,16 +2805,24 @@ function renderFuturesPreview(){
   const mark = priceOf(c.base);
   const lp = parseFloat(document.getElementById("fLimitPrice").value) || 0;
   const p = fotype === "limit" && lp > 0 ? lp : mark;   // 限价模式按委托价预估
-  const lev = futReadLev();
-  fLev = lev;
-  document.getElementById("fLevTag").textContent = lev + "x";
+  const levWanted = futReadLev();
   const margin = parseFloat(document.getElementById("fMarginInput").value) || 0;
+  // 按分档规则校验杠杆：名义价值越大，允许的杠杆越低
+  const lev = futMaxLevFor(margin > 0 ? margin : 1, levWanted);
+  fLev = lev;
+  document.getElementById("fLevTag").textContent = lev + "x" + (lev < levWanted ? "（超档位已降）" : "");
   const notional = margin * lev;
   const qty = p > 0 ? Math.floor(notional / p * 10 ** c.prec) / 10 ** c.prec : 0;
-  const liq = qty > 0 ? (fSide === "long" ? p - margin / qty : p + margin / qty) : 0;
+  const tier = futTierOf(notional);
+  const mm = notional * tier.mmr;
+  const buffer = margin - mm;   // 可亏缓冲：跌掉这部分即触发强平
+  const liq = qty > 0 ? (fSide === "long" ? p - buffer / qty : p + buffer / qty) : 0;
   document.getElementById("fPrevNotional").textContent = fmt(notional, 2) + " USDT";
   document.getElementById("fPrevQty").textContent = fmt(qty, c.prec) + " " + c.base;
   document.getElementById("fPrevFee").textContent = fmt(notional * FUT_FEE, 2) + " USDT";
+  document.getElementById("fPrevMM").textContent = notional > 0
+    ? fmt(mm, 2) + " USDT（" + tier.label + " " + (tier.mmr * 100).toFixed(1) + "%）"
+    : "0.00 USDT";
   const liqEl = document.getElementById("fPrevLiq");
   if(fmode === "cross"){
     liqEl.textContent = qty > 0 ? "共用池（不单列）" : "—";
@@ -2771,9 +2847,14 @@ function futNextFunding(){
 // 限价模式下委托即冻结，触价后以委托价成交
 function openFutures(){
   const c = COINS.find(x => x.base === fBase) || COINS[0];
-  const lev = futReadLev();
+  const levWanted = futReadLev();
   const margin = parseFloat(document.getElementById("fMarginInput").value) || 0;
   if(!(margin > 0)){ toast("请输入保证金", "err"); return; }
+  // 分档校验：名义价值进高档位时，杠杆上限随之下降
+  const lev = futMaxLevFor(margin, levWanted);
+  if(lev < levWanted){
+    toast(`名义价值 ${fmt(margin * levWanted, 0)} USDT 超出 ${futTierOf(margin * levWanted).label} 杠杆上限，已按 ${lev}x 开仓`, "err");
+  }
 
   if(fotype === "limit"){
     const lp = parseFloat(document.getElementById("fLimitPrice").value) || 0;
@@ -2910,24 +2991,26 @@ function checkFutTpSl(){
   return n;
 }
 
-// 自动强平：逐仓看单仓是否亏光自己的保证金；全仓看共用池权益是否 ≤ 0
+// 自动强平：逐仓看单仓权益是否跌破自身维持保证金；全仓看共用池权益是否跌破合计维持保证金
 function checkLiquidation(){
   if(!state.futures.length) return 0;
   let n = 0;
-  // 逐仓：单仓亏损 ≥ 本仓保证金即强平
+  // 逐仓：未实现亏损吃掉（保证金 - 维持保证金）即强平
   for(const pos of [...state.futures]){
     if(pos.marginMode === "cross") continue;
-    if(futUpnl(pos) <= -pos.margin + 1e-9){
-      closeFutures(pos.id, "liq");
+    const buffer = pos.margin - futMaintMargin(pos);
+    if(futUpnl(pos) <= -buffer + 1e-9){
+      closeFutures(pos.id, "liq", Math.max(0, pos.margin + futUpnl(pos)));
       n++;
     }
   }
-  // 全仓：所有全仓仓位共用保证金池，池权益 ≤ 0 时一次性全部强平
-  // 池权益已 ≤ 0，没有任何可返还资金，统一按 0 返还（不会凭空造钱）
+  // 全仓：所有全仓仓位共用保证金池，池权益 ≤ 合计维持保证金时一次性全部强平
+  // 强平后剩余权益低于维持保证金，按 0 返还（不会凭空造钱）
   const crossPos = state.futures.filter(p => p.marginMode === "cross");
   if(crossPos.length){
     const eq = crossPos.reduce((s,p)=> s + p.margin + futUpnl(p), 0);
-    if(eq <= 0){
+    const mm = crossPos.reduce((s,p)=> s + futMaintMargin(p), 0);
+    if(eq <= mm){
       for(const p of crossPos) closeFutures(p.id, "liq", 0);
       n += crossPos.length;
     }
