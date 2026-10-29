@@ -448,7 +448,10 @@ tbody tr:hover{background:var(--panel2)}
       </div>
     </div>
     <div class="card">
-      <h3>持仓明细</h3>
+      <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;margin-bottom:10px">
+        <h3 style="margin:0">持仓明细</h3>
+        <button class="trade-btn" id="btnExportAssets">导出 CSV</button>
+      </div>
       <table>
         <thead><tr><th data-sort="base" class="sortable">币种<span class="arw"></span></th><th>数量</th><th>成本均价</th><th>最新价</th><th data-sort="mv" class="sortable">市值<span class="arw"></span></th><th data-sort="pnl" class="sortable">浮盈亏<span class="arw"></span></th></tr></thead>
         <tbody id="assetBody"></tbody>
@@ -487,10 +490,20 @@ tbody tr:hover{background:var(--panel2)}
         <button data-kind="limit">限价</button>
         <span class="mid" id="orderCount" style="margin-left:auto;align-self:center;font-size:12px"></span>
       </div>
+      <div class="tf" style="margin-bottom:10px" id="orderCoinFilter">
+        <button data-coin="all" class="on">全部币种</button>
+        <button data-coin="BTC">BTC</button>
+        <button data-coin="ETH">ETH</button>
+        <button data-coin="BNB">BNB</button>
+        <button data-coin="SOL">SOL</button>
+        <button data-coin="XRP">XRP</button>
+        <button data-coin="DOGE">DOGE</button>
+      </div>
       <table>
         <thead><tr><th>时间</th><th>交易对</th><th>方向</th><th>类型</th><th>价格</th><th>数量</th><th>成交额</th><th>手续费</th></tr></thead>
         <tbody id="ordersBody"></tbody>
       </table>
+      <div class="sub" id="orderSummary" style="margin-top:10px"></div>
     </div>
   </section>
 
@@ -508,11 +521,14 @@ tbody tr:hover{background:var(--panel2)}
     <div class="grid g3" id="earnProducts" style="margin-bottom:12px"></div>
 
     <div class="card">
-      <h3>我的理财</h3>
+      <h3>我的理财 <span class="mid" style="font-weight:400">按秒计息 · 到期后手动赎回</span>
+        <button class="trade-btn" id="btnExportEarn" style="float:right;margin-top:-6px">导出 CSV</button>
+      </h3>
       <table>
         <thead><tr><th>产品</th><th>本金</th><th>年化</th><th>已赚</th><th>到期</th><th>操作</th></tr></thead>
         <tbody id="earnBody"></tbody>
       </table>
+      <div id="earnBars" style="margin-top:14px"></div>
     </div>
   </section>
 
@@ -530,7 +546,7 @@ tbody tr:hover{background:var(--panel2)}
   </section>
 
   <div class="foot">
-    模拟交易所 · Paper Exchange — 仅用于界面与流程演示 · build <span id="buildVer">20261029-14</span><br>
+    模拟交易所 · Paper Exchange — 仅用于界面与流程演示 · build <span id="buildVer">20261029-15</span><br>
     不构成投资建议，不涉及真实资金、真实交易、真实收益
   </div>
 </div>
@@ -1983,6 +1999,38 @@ function updateTradeCalc(){
 
 /* ---------- 渲染：资产 ---------- */
 let assetSort = { key:"mv", dir:-1 };   // 持仓明细排序：默认按市值降序
+
+// 持仓明细行（按当前排序），渲染与导出共用
+function assetRows(){
+  const rows = COINS.filter(c => holdQty(c.base) > 0).map(c=>{
+    const h = state.holdings[c.base];
+    const px = priceOf(c.base);
+    return { base:c.base, qty:h.qty, cost:h.cost, px, mv:h.qty*px, pnl:(px-h.cost)*h.qty };
+  });
+  rows.sort((a,b)=>{
+    const k = assetSort.key;
+    const d = k === "base" ? a.base.localeCompare(b.base) : (a[k] - b[k]);
+    return d * assetSort.dir;
+  });
+  return rows;
+}
+
+// 持仓明细导出
+function exportAssetsCsv(){
+  const rows = assetRows();
+  if(!rows.length){ toast("暂无持仓可导出", "err"); return; }
+  const out = [["币种","数量","成本均价","最新价","市值(USDT)","浮盈亏(USDT)","浮盈亏率(%)"]];
+  for(const r of rows){
+    out.push([
+      r.base, fmtQty(r.qty, r.base), fmtPx(r.cost), fmtPx(r.px),
+      fmt(r.mv, 2), fmt(r.pnl, 2), fmt(r.cost > 0 ? (r.px - r.cost) / r.cost * 100 : 0, 2)
+    ]);
+  }
+  downloadCsv(out, "holdings_" + new Date().toISOString().slice(0, 19).replace(/[:T]/g, "-") + ".csv");
+  toast(`已导出 ${rows.length} 条持仓 CSV`, "ok");
+}
+document.getElementById("btnExportAssets").addEventListener("click", exportAssetsCsv);
+
 // 资产分布环形图：纯 Canvas 2D 手绘，不引第三方库
 const ALLOC_COLORS = ["#f0b90b","#0ecb81","#4a9eff","#f6465d","#2dc7c9","#e8a33d","#8fa3b8","#b07cf0"];
 
@@ -2065,16 +2113,7 @@ function renderAssets(){
 
   // 明细：支持按币种 / 市值 / 浮盈亏排序（点表头切换升降序）
   const ab = document.getElementById("assetBody");
-  const rows = COINS.filter(c => holdQty(c.base) > 0).map(c=>{
-    const h = state.holdings[c.base];
-    const px = priceOf(c.base);
-    return { base:c.base, qty:h.qty, cost:h.cost, px, mv:h.qty*px, pnl:(px-h.cost)*h.qty };
-  });
-  rows.sort((a,b)=>{
-    const k = assetSort.key;
-    const d = k === "base" ? a.base.localeCompare(b.base) : (a[k] - b[k]);
-    return d * assetSort.dir;
-  });
+  const rows = assetRows();
   document.querySelectorAll("#view-assets th.sortable").forEach(th=>{
     th.querySelector(".arw").textContent = th.dataset.sort === assetSort.key ? (assetSort.dir < 0 ? "▼" : "▲") : "";
   });
@@ -2250,7 +2289,51 @@ function renderEarn(){
       <td><button class="trade-btn" data-redeem="${i}">赎回</button></td>
     </tr>`;
   }).join("") : `<tr><td colspan="6" class="empty" style="text-align:center">还没有理财订单</td></tr>`;
+
+  // 收益结构条形图：按币种汇总「本金市值」与「已赚收益」，直观看出钱压在哪
+  const bars = document.getElementById("earnBars");
+  if(bars){
+    const byBase = {};
+    for(const e of state.earns){
+      const b = byBase[e.base] || (byBase[e.base] = { principal:0, accrued:0 });
+      b.principal += e.qty * priceOf(e.base);
+      b.accrued   += earnAccrued(e) * priceOf(e.base);
+    }
+    const list = Object.entries(byBase).map(([base, v]) => ({ base, ...v }));
+    if(!list.length){
+      bars.innerHTML = `<div class="sub">存入理财后，这里会显示各币种的本金与已赚收益占比。</div>`;
+    }else{
+      const total = list.reduce((s,x)=> s + x.principal, 0) || 1;
+      bars.innerHTML = `<div class="sub" style="margin-bottom:8px">收益结构 · 本金按市值折算</div>` + list.map(x=>{
+        const pct = x.principal / total * 100;
+        return `<div style="margin-bottom:8px">
+          <div style="display:flex;justify-content:space-between;font-size:12px">
+            <span>${x.base}</span>
+            <span class="mid">${fmt(x.principal,2)} 本金 · <span class="up">+${fmt(x.accrued,4)}</span> 已赚</span>
+          </div>
+          <div class="bar"><i style="width:${pct}%;background:${ALLOC_COLORS[0]}"></i></div>
+        </div>`;
+      }).join("");
+    }
+  }
 }
+
+// 导出我的理财 CSV（本金按币种原值记录，收益按当前累计值）
+function exportEarnCsv(){
+  if(!state.earns.length){ toast("暂无理财订单可导出", "err"); return; }
+  const out = [["产品","币种","本金数量","年化(%)","已赚数量","到期","存入时间"]];
+  for(const e of state.earns){
+    const prod = EARN_PRODUCTS.find(p=>p.id===e.productId) || { name:"未知" };
+    const expire = e.days ? new Date(e.startAt + e.days*86400000).toLocaleDateString("zh-CN") : "随时可取";
+    out.push([
+      prod.name, e.base, fmtQty(e.qty, e.base), e.apy.toFixed(1),
+      fmt(earnAccrued(e), 8), expire, new Date(e.startAt).toLocaleString("zh-CN")
+    ]);
+  }
+  downloadCsv(out, "earnings_" + new Date().toISOString().slice(0, 19).replace(/[:T]/g, "-") + ".csv");
+  toast(`已导出 ${state.earns.length} 条理财 CSV`, "ok");
+}
+document.getElementById("btnExportEarn").addEventListener("click", exportEarnCsv);
 
 /* ---------- 渲染：会员 ---------- */
 function renderMember(){
@@ -2291,12 +2374,20 @@ function renderMember(){
 /* ---------- 渲染：订单历史 ---------- */
 let orderSide = "all";   // 订单页筛选：全部 / 买入 / 卖出
 let orderKind = "all";   // 全部类型 / 市价 / 限价
+let orderCoin = "all";   // 全部币种 / BTC / ETH ...
 
-function renderOrders(){
-  const tb = document.getElementById("ordersBody");
+// 按当前筛选条件取订单（渲染与导出共用，保证看到什么就导出什么）
+function filteredOrders(){
   let list = state.orders.slice().reverse();   // 最新在前
   if(orderSide !== "all") list = list.filter(o => o.side === orderSide);
   if(orderKind !== "all") list = list.filter(o => o.kind === orderKind);
+  if(orderCoin !== "all") list = list.filter(o => o.base === orderCoin);
+  return list;
+}
+
+function renderOrders(){
+  const tb = document.getElementById("ordersBody");
+  const list = filteredOrders();
   tb.innerHTML = list.length ? list.map(o=>{
     const buy = o.side === "buy";
     return `<tr>
@@ -2312,6 +2403,15 @@ function renderOrders(){
   }).join("") : `<tr><td colspan="8" class="empty" style="text-align:center">暂无订单，去交易页下第一单</td></tr>`;
   const cnt = document.getElementById("orderCount");
   if(cnt) cnt.textContent = `${list.length} / ${state.orders.length} 条`;
+  // 当前筛选下的汇总：笔数 / 成交额 / 手续费，方便对着筛选结果看总账
+  const sumAmt = list.reduce((s,o)=> s + (typeof o.amount === "number" ? o.amount : 0), 0);
+  const sumFee = list.reduce((s,o)=> s + (typeof o.fee === "number" ? o.fee : 0), 0);
+  const sumEl = document.getElementById("orderSummary");
+  if(sumEl){
+    sumEl.textContent = list.length
+      ? `当前筛选合计：成交额 ${fmt(sumAmt, 2)} USDT · 手续费 ${fmt(sumFee, 4)} USDT · ${list.length} 笔`
+      : "当前筛选下无订单";
+  }
 }
 
 // 订单筛选按钮
@@ -2328,16 +2428,36 @@ document.getElementById("orderFilter").addEventListener("click", e => {
   renderOrders();
 });
 
-// 按当前筛选条件导出 CSV（带 BOM，Excel 直接显示中文）
-function exportOrdersCsv(){
-  let list = state.orders.slice().reverse();
-  if(orderSide !== "all") list = list.filter(o => o.side === orderSide);
-  if(orderKind !== "all") list = list.filter(o => o.kind === orderKind);
-  if(!list.length){ toast("当前筛选下无订单可导出", "err"); return; }
+// 币种筛选按钮
+document.getElementById("orderCoinFilter").addEventListener("click", e => {
+  const b = e.target.closest("[data-coin]");
+  if(!b) return;
+  orderCoin = b.dataset.coin;
+  document.querySelectorAll('#orderCoinFilter [data-coin]').forEach(x => x.classList.toggle("on", x === b));
+  renderOrders();
+});
+
+// 通用 CSV 下载（带 BOM，Excel 直接显示中文）
+function downloadCsv(rows, filename){
   const esc = v => {
     const s = String(v ?? "");
     return /[",\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s;
   };
+  const csv = "\ufeff" + rows.map(r => r.map(esc).join(",")).join("\r\n");
+  const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a); a.click(); a.remove();
+  URL.revokeObjectURL(url);
+}
+const csvStamp = () => "orders_" + new Date().toISOString().slice(0, 19).replace(/[:T]/g, "-") + ".csv";
+
+// 按当前筛选条件导出订单 CSV
+function exportOrdersCsv(){
+  const list = filteredOrders();
+  if(!list.length){ toast("当前筛选下无订单可导出", "err"); return; }
   const rows = [["时间","交易对","方向","类型","价格","数量","成交额","手续费"]];
   for(const o of list){
     rows.push([
@@ -2348,14 +2468,7 @@ function exportOrdersCsv(){
       typeof o.fee === "number" ? fmt(o.fee, 4) : ""
     ]);
   }
-  const csv = "\ufeff" + rows.map(r => r.map(esc).join(",")).join("\r\n");
-  const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement("a");
-  a.href = url;
-  a.download = "orders_" + new Date().toISOString().slice(0, 19).replace(/[:T]/g, "-") + ".csv";
-  document.body.appendChild(a); a.click(); a.remove();
-  URL.revokeObjectURL(url);
+  downloadCsv(rows, csvStamp());
   toast(`已导出 ${list.length} 条订单 CSV`, "ok");
 }
 document.getElementById("btnExportCsv").addEventListener("click", exportOrdersCsv);
