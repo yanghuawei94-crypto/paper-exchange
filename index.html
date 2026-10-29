@@ -466,6 +466,31 @@ tbody tr:hover{background:var(--panel2)}
           <thead><tr><th>时间</th><th>币种</th><th>方向</th><th>费率</th><th>期数</th><th>金额</th></tr></thead>
           <tbody id="fundBody"></tbody>
         </table>
+        <!-- 强平与资金费历史：汇总强平/止盈/止损/资金费，筛选与导出只影响本面板 -->
+        <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;margin:20px 0 10px">
+          <h3 style="margin:0">强平与资金费历史 <span class="mid" style="font-weight:400;font-size:11px">强平 / 止盈 / 止损 / 资金费 · 按时间倒序</span></h3>
+          <button class="trade-btn" id="btnExportRisk">导出 CSV</button>
+        </div>
+        <div class="tf" style="margin-bottom:10px" id="riskTypeFilter">
+          <button data-rtype="all" class="on">全部类型</button>
+          <button data-rtype="liq">强平</button>
+          <button data-rtype="tp">止盈</button>
+          <button data-rtype="sl">止损</button>
+          <button data-rtype="funding">资金费</button>
+          <span class="mid" id="riskCount" style="margin-left:auto;align-self:center;font-size:12px"></span>
+        </div>
+        <div class="tf" style="margin-bottom:10px" id="riskTimeFilter">
+          <button data-rtime="all" class="on">全部时间</button>
+          <button data-rtime="1d">今天</button>
+          <button data-rtime="7d">近 7 天</button>
+          <button data-rtime="30d">近 30 天</button>
+          <button class="trade-btn" data-rreset="1" style="margin-left:auto">清空筛选</button>
+        </div>
+        <table>
+          <thead><tr><th>时间</th><th>类型</th><th>币种</th><th>方向</th><th>价格</th><th>数量</th><th>金额</th></tr></thead>
+          <tbody id="riskBody"></tbody>
+        </table>
+        <div class="sub" id="riskSummary" style="margin-top:10px"></div>
         <div class="sub" style="margin-top:12px">仅模拟：不接入真实合约账户。逐仓 = 权益跌破本仓维持保证金即强平；全仓 = 所有全仓仓位共用保证金池，池权益 ≤ 合计维持保证金时一次性全部强平。维持保证金按名义价值分档，名义越大档位越高。</div>
       </div>
     </div>
@@ -618,7 +643,7 @@ tbody tr:hover{background:var(--panel2)}
   </section>
 
   <div class="foot">
-    模拟交易所 · Paper Exchange — 仅用于界面与流程演示 · build <span id="buildVer">20261030-23</span><br>
+    模拟交易所 · Paper Exchange — 仅用于界面与流程演示 · build <span id="buildVer">20261030-24</span><br>
     不构成投资建议，不涉及真实资金、真实交易、真实收益
   </div>
 </div>
@@ -2961,6 +2986,119 @@ function exportOrdersCsv(){
 }
 document.getElementById("btnExportCsv").addEventListener("click", exportOrdersCsv);
 
+/* ---------- 强平与资金费历史 ---------- */
+let riskType = "all";   // all / liq / tp / sl / funding
+let riskTime = "all";   // all / 1d / 7d / 30d（与订单页时间筛选同一语义）
+const RISK_TYPE_TEXT = { liq: "强平", tp: "止盈", sl: "止损", funding: "资金费" };
+
+// 汇总风险事件：强平/止盈/止损来自合约平仓记录，资金费来自资金费流水；金额带符号（负=支出/亏损）
+function riskEvents(){
+  const evts = [];
+  for(const o of state.futOrders){
+    if(o.kind === "close" && RISK_TYPE_TEXT[o.reason]){
+      evts.push({ t: o.t, type: o.reason, base: o.base, side: o.side, price: o.price, qty: o.qty, amt: o.pnl });
+    }
+  }
+  for(const f of state.futFundings){
+    evts.push({ t: f.t, type: "funding", base: f.base, side: f.side, price: null, qty: null, amt: (f.direction === "pay" ? -1 : 1) * f.amt });
+  }
+  return evts.sort((a, b) => orderTs(b.t) - orderTs(a.t));   // 最新在前
+}
+
+// 按当前筛选条件取事件（渲染与导出共用）
+function filteredRiskEvents(){
+  let list = riskEvents();
+  if(riskType !== "all") list = list.filter(e => e.type === riskType);
+  if(riskTime !== "all"){
+    const days = { "1d": 1, "7d": 7, "30d": 30 }[riskTime] || 0;
+    if(days){
+      const today = new Date();
+      today.setHours(0, 0, 0, 0);
+      const since = today.getTime() - (days - 1) * 86400000;   // 「今天」= 当天 0 点起
+      list = list.filter(e => orderTs(e.t) >= since);
+    }
+  }
+  return list;
+}
+
+function renderRiskEvents(){
+  const el = document.getElementById("riskBody");
+  if(!el) return;
+  const list = filteredRiskEvents();
+  el.innerHTML = list.length ? list.map(e => {
+    const amtCls = e.amt > 0 ? "up" : e.amt < 0 ? "down" : "mid";
+    const typeCls = e.type === "liq" || e.type === "sl" ? "down" : e.type === "tp" ? "up" : "mid";
+    return `<tr>
+      <td class="mid">${e.t}</td>
+      <td class="${typeCls}">${RISK_TYPE_TEXT[e.type]}</td>
+      <td>${e.base}</td>
+      <td class="${e.side === "long" ? "up" : "down"}">${futSideLabel(e.side)}</td>
+      <td>${e.price === null ? "—" : fmtPx(e.price)}</td>
+      <td>${e.qty === null ? "—" : fmtQty(e.qty, e.base)}</td>
+      <td class="${amtCls}">${futFmtSign(e.amt)}</td>
+    </tr>`;
+  }).join("") : `<tr><td colspan="7" class="empty" style="text-align:center">当前筛选下暂无强平 / 止盈止损 / 资金费记录</td></tr>`;
+  // 条数统计与导出按钮文案
+  const total = riskEvents().length;
+  const cnt = document.getElementById("riskCount");
+  if(cnt) cnt.textContent = `${list.length} / ${total} 条`;
+  const exBtn = document.getElementById("btnExportRisk");
+  if(exBtn) exBtn.textContent = list.length ? `导出 CSV（${list.length}）` : "导出 CSV";
+  // 汇总：各类型笔数 + 金额合计（负=净支出）
+  const n = t => list.filter(e => e.type === t).length;
+  const sum = list.reduce((s, e) => s + e.amt, 0);
+  const sumEl = document.getElementById("riskSummary");
+  if(sumEl){
+    sumEl.textContent = list.length
+      ? `当前筛选合计：${list.length} 条（强平 ${n("liq")} / 止盈 ${n("tp")} / 止损 ${n("sl")} / 资金费 ${n("funding")}）· 金额合计 ${futFmtSign(sum)} USDT`
+      : "当前筛选下无记录";
+  }
+}
+
+// 类型筛选
+document.getElementById("riskTypeFilter").addEventListener("click", e => {
+  const b = e.target.closest("button");
+  if(!b || !b.dataset.rtype) return;
+  riskType = b.dataset.rtype;
+  document.querySelectorAll("#riskTypeFilter [data-rtype]").forEach(x => x.classList.toggle("on", x === b));
+  renderRiskEvents();
+});
+
+// 时间区间筛选 + 一键清空
+document.getElementById("riskTimeFilter").addEventListener("click", e => {
+  const b = e.target.closest("button");
+  if(!b) return;
+  if(b.dataset.rreset){
+    riskType = "all"; riskTime = "all";
+    document.querySelectorAll("#riskTypeFilter [data-rtype]").forEach(x => x.classList.toggle("on", x.dataset.rtype === "all"));
+    document.querySelectorAll("#riskTimeFilter [data-rtime]").forEach(x => x.classList.toggle("on", x.dataset.rtime === "all"));
+    toast("已清空筛选", "ok");
+  }else if(b.dataset.rtime){
+    riskTime = b.dataset.rtime;
+    document.querySelectorAll("#riskTimeFilter [data-rtime]").forEach(x => x.classList.toggle("on", x === b));
+  }else return;
+  renderRiskEvents();
+});
+
+// 导出当前筛选结果为 CSV，文件名带筛选标识
+function exportRiskCsv(){
+  const list = filteredRiskEvents();
+  if(!list.length){ toast("当前筛选下无记录可导出", "err"); return; }
+  const rows = [["时间","类型","交易对","方向","价格","数量","金额(USDT)"]];
+  for(const e of list){
+    rows.push([
+      e.t, RISK_TYPE_TEXT[e.type], e.base + "/USDT", futSideLabel(e.side),
+      e.price === null ? "" : fmtPx(e.price),
+      e.qty === null ? "" : fmtQty(e.qty, e.base),
+      fmt(e.amt, 4)   // 资金费金额可能很小，保留 4 位小数
+    ]);
+  }
+  const tag = [riskType !== "all" ? riskType : "", riskTime !== "all" ? riskTime : ""].filter(Boolean).join("-") || "all";
+  downloadCsv(rows, `risk_${tag}_${new Date().toISOString().slice(0, 19).replace(/[:T]/g, "-")}.csv`);
+  toast(`已导出 ${list.length} 条记录 CSV`, "ok");
+}
+document.getElementById("btnExportRisk").addEventListener("click", exportRiskCsv);
+
 /* ---------- 强平预警 ---------- */
 // 保证金裕度 = (权益 - 维持保证金) / 维持保证金；裕度 ≤ 0 即触发强平。全仓按共用池整体计算
 function liqBuffer(pos){
@@ -3108,6 +3246,7 @@ function renderFutures(){
   document.getElementById("fLimitRow").style.display = fotype === "limit" ? "" : "none";
   renderFuturesPreview();
   checkLiqWarnings();   // 强平预警：进入危险区toast一次，恢复后重置
+  renderRiskEvents();   // 强平与资金费历史面板
 }
 
 /* ---------- 总渲染 ---------- */
