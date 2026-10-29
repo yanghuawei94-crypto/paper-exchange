@@ -348,6 +348,18 @@ tbody tr:hover{background:var(--panel2)}
           <button class="long on" data-fside="long">做多</button>
           <button class="short" data-fside="short">做空</button>
         </div>
+        <div class="tf" id="fOtypeBtns" style="margin-bottom:12px">
+          <button data-fotype="market" class="on">市价</button>
+          <button data-fotype="limit">限价</button>
+        </div>
+        <div class="tf" id="fModeBtns" style="margin-bottom:12px">
+          <button data-fmode="isolated" class="on">逐仓</button>
+          <button data-fmode="cross">全仓</button>
+        </div>
+        <div class="field" id="fLimitRow" style="display:none">
+          <label for="fLimitPrice">委托价（USDT）</label>
+          <div class="row"><input id="fLimitPrice" type="text" inputmode="decimal" placeholder="触发此价时开仓"><span class="unit">USDT</span></div>
+        </div>
         <div class="field">
           <label for="fLev">杠杆 <span class="mid" id="fLevTag">5x</span></label>
           <div class="row"><input id="fLev" type="text" inputmode="numeric" value="5"><span class="unit">倍</span></div>
@@ -379,17 +391,22 @@ tbody tr:hover{background:var(--panel2)}
       </div>
 
       <div class="card">
-        <h3>当前合约持仓 <span class="mid" style="font-weight:400;font-size:11px">平仓按最新标记价成交</span></h3>
+        <h3>当前合约持仓 <span class="mid" style="font-weight:400;font-size:11px">平仓按最新标记价成交 · 止盈止损/强平自动触发</span></h3>
         <table>
-          <thead><tr><th>币种</th><th>方向</th><th>杠杆</th><th>数量</th><th>开仓价</th><th>标记价</th><th>保证金</th><th>未实现盈亏</th><th>强平价</th><th>操作</th></tr></thead>
+          <thead><tr><th>币种</th><th>方向</th><th>杠杆</th><th>数量</th><th>开仓价</th><th>标记价</th><th>保证金</th><th>未实现盈亏</th><th>强平价</th><th>止盈 / 止损</th><th>操作</th></tr></thead>
           <tbody id="futPosBody"></tbody>
+        </table>
+        <h3 style="margin-top:20px">合约委托 <span class="mid" style="font-weight:400;font-size:11px">限价开仓 · 触价自动成交</span></h3>
+        <table>
+          <thead><tr><th>时间</th><th>币种</th><th>方向</th><th>杠杆</th><th>委托价</th><th>保证金</th><th>操作</th></tr></thead>
+          <tbody id="futOrderBody"></tbody>
         </table>
         <h3 style="margin-top:20px">合约记录 <span class="mid" style="font-weight:400;font-size:11px">最近 50 条</span></h3>
         <table>
           <thead><tr><th>时间</th><th>币种</th><th>方向</th><th>类型</th><th>价格</th><th>数量</th><th>盈亏</th><th>手续费</th></tr></thead>
           <tbody id="futHistBody"></tbody>
         </table>
-        <div class="sub" style="margin-top:12px">仅模拟：不接入真实合约账户，不做自动强平，强平价只作展示。</div>
+        <div class="sub" style="margin-top:12px">仅模拟：不接入真实合约账户。逐仓 = 单仓亏光自身保证金即强平；全仓 = 所有全仓仓位共用保证金池，池权益 ≤ 0 时一次性全部强平。</div>
       </div>
     </div>
   </section>
@@ -508,7 +525,7 @@ tbody tr:hover{background:var(--panel2)}
   </section>
 
   <div class="foot">
-    模拟交易所 · Paper Exchange — 仅用于界面与流程演示 · build <span id="buildVer">20261029-11</span><br>
+    模拟交易所 · Paper Exchange — 仅用于界面与流程演示 · build <span id="buildVer">20261029-13</span><br>
     不构成投资建议，不涉及真实资金、真实交易、真实收益
   </div>
 </div>
@@ -572,8 +589,9 @@ function defaultState(){
     earns: [],          // {id, productId, base, qty, apy, startAt, days}
     member: { tier:"FREE", expireAt:0 },
     hist: [],           // 总资产采样点 {t, v}，盈亏走势图用
-    futures: [],        // 合约持仓 {id, base, side:'long'|'short', qty, entry, lev, margin, fee, openAt, lastFundAt}
+    futures: [],        // 合约持仓 {id, base, side:'long'|'short', qty, entry, lev, margin, fee, openAt, lastFundAt, marginMode?, tp?, sl?}
     futOrders: [],      // 合约开/平仓记录，最近 50 条
+    futOpenOrders: [],  // 合约限价开仓委托 {id, t, base, side, lev, margin, price, fee, marginMode?}
     deposited: 0,       // 「模拟充值」累计额，算盈亏时从总资产里扣除（充值不算盈利）
     createdAt: Date.now(),
   };
@@ -608,11 +626,23 @@ function load(){
     if(!(typeof p.entry === "number" && isFinite(p.entry) && p.entry > 0)) return false;
     if(!(typeof p.lev === "number" && isFinite(p.lev) && p.lev >= 1 && p.lev <= FUT_MAX_LEV)) p.lev = 1;
     if(!(typeof p.margin === "number" && isFinite(p.margin) && p.margin >= 0)) p.margin = 0;
+    if(p.marginMode !== "cross") p.marginMode = "isolated";   // 旧存档无此字段，默认逐仓
     if(!(typeof p.lastFundAt === "number" && isFinite(p.lastFundAt))) p.lastFundAt = Date.now();
     return true;
   });
   if(!Array.isArray(state.futOrders)) state.futOrders = [];
   state.futOrders = state.futOrders.filter(o => o && typeof o.t === "string" && COINS.some(c => c.base === o.base));
+  if(!Array.isArray(state.futOpenOrders)) state.futOpenOrders = [];
+  state.futOpenOrders = state.futOpenOrders.filter(o => {
+    if(!o || !COINS.some(c => c.base === o.base)) return false;
+    if(o.side !== "long" && o.side !== "short") return false;
+    if(!(typeof o.lev === "number" && isFinite(o.lev))) return false;
+    if(!(typeof o.margin === "number" && isFinite(o.margin) && o.margin > 0)) return false;
+    if(!(typeof o.price === "number" && isFinite(o.price) && o.price > 0)) return false;
+    if(!(typeof o.fee === "number" && isFinite(o.fee) && o.fee >= 0)) o.fee = o.margin * o.lev * FUT_FEE;
+    if(o.marginMode !== "cross") o.marginMode = "isolated";
+    return true;
+  });
   // deposited 走独立键：旧版本标签页重写主存档时不会把这个字段抹掉
   const depRaw = parseFloat(localStorage.getItem(DEP_KEY));
   if(isFinite(depRaw) && depRaw >= 0){
@@ -696,14 +726,22 @@ function futUpnl(pos){
   const d = priceOf(pos.base) - pos.entry;
   return d * pos.qty * (pos.side === "long" ? 1 : -1);
 }
-// 强平价：亏光保证金的价格（线性合约，忽略维持保证金，仅展示用）
+// 强平价：逐仓 = 亏光本仓保证金的价格；全仓无单独强平价（返回 null，由共用池权益决定）
 function futLiqPrice(pos){
+  if(pos.marginMode === "cross") return null;
   const liq = pos.side === "long" ? pos.entry - pos.margin / pos.qty : pos.entry + pos.margin / pos.qty;
   return Math.max(liq, 0);
 }
-// 合约权益 = Σ max(0, 保证金 + 未实现盈亏)；保证金已从 state.usdt 划出，这里加回来
+// 合约权益 = 逐仓逐仓位取 max(0, 保证金+未实现盈亏) + 全仓共用池 max(0, Σ(保证金+未实现盈亏))
+// 保证金已从 state.usdt 划出，这里加回来
 function futuresEquity(){
-  return state.futures.reduce((s,p)=> s + Math.max(0, p.margin + futUpnl(p)), 0);
+  let iso = 0, cross = 0;
+  for(const p of state.futures){
+    const e = p.margin + futUpnl(p);
+    if(p.marginMode === "cross") cross += e;
+    else iso += Math.max(0, e);
+  }
+  return iso + Math.max(0, cross);
 }
 function totalAssets(){
   let t = state.usdt;
@@ -2158,29 +2196,51 @@ function renderFutures(){
     const p = priceOf(pos.base);
     const u = futUpnl(pos);
     const cls = u > 0 ? "up" : u < 0 ? "down" : "mid";
+    const isCross = pos.marginMode === "cross";
+    const tpsl = (pos.tp ? "TP " + fmtPx(pos.tp) : "—") + " / " + (pos.sl ? "SL " + fmtPx(pos.sl) : "—");
     return `<tr>
       <td>${pos.base}</td>
       <td class="${pos.side==="long"?"up":"down"}">${futSideLabel(pos.side)}</td>
-      <td>${pos.lev}x</td>
+      <td>${pos.lev}x <span class="mid" style="font-size:10px">${isCross ? "全仓" : "逐仓"}</span></td>
       <td>${fmtQty(pos.qty, pos.base)}</td>
       <td class="mid">${fmtPx(pos.entry)}</td>
       <td>${fmtPx(p)}</td>
       <td>${fmt(pos.margin,2)}</td>
       <td class="${cls}">${futFmtSign(u)}</td>
-      <td class="mid">${fmtPx(futLiqPrice(pos))}</td>
-      <td><button class="trade-btn" data-close-fut="${pos.id}">平仓</button></td>
+      <td class="mid">${isCross ? "共用池" : fmtPx(futLiqPrice(pos))}</td>
+      <td class="mid" style="font-size:11px">${tpsl}</td>
+      <td>
+        <button class="trade-btn" data-close-fut="${pos.id}">平仓</button>
+        <button class="trade-btn" data-tpsl="${pos.id}" style="margin-left:4px">设置</button>
+      </td>
     </tr>`;
-  }).join("") : `<tr><td colspan="10" class="empty" style="text-align:center">暂无合约持仓</td></tr>`;
+  }).join("") : `<tr><td colspan="11" class="empty" style="text-align:center">暂无合约持仓</td></tr>`;
 
-  const hb = document.getElementById("futHistBody");
-  const rows = state.futOrders.slice().reverse();
-  hb.innerHTML = rows.length ? rows.map(o=>{
-    const pnlCls = o.pnl > 0 ? "up" : o.pnl < 0 ? "down" : "mid";
+  // 合约限价委托
+  const ob = document.getElementById("futOrderBody");
+  ob.innerHTML = state.futOpenOrders.length ? state.futOpenOrders.slice().reverse().map(o=>{
     return `<tr>
       <td class="mid">${o.t}</td>
       <td>${o.base}</td>
       <td class="${o.side==="long"?"up":"down"}">${futSideLabel(o.side)}</td>
-      <td class="mid">${o.kind === "open" ? "开仓" : "平仓"}</td>
+      <td>${o.lev}x <span class="mid" style="font-size:10px">${o.marginMode === "cross" ? "全仓" : "逐仓"}</span></td>
+      <td class="mid">${fmtPx(o.price)}</td>
+      <td>${fmt(o.margin,2)}</td>
+      <td><button class="trade-btn" data-cancel-fut="${o.id}">撤单</button></td>
+    </tr>`;
+  }).join("") : `<tr><td colspan="7" class="empty" style="text-align:center">暂无限价委托</td></tr>`;
+
+  const hb = document.getElementById("futHistBody");
+  const rows = state.futOrders.slice().reverse();
+  const reasonText = { tp: "止盈", sl: "止损", liq: "强平", limit: "限价", manual: "手动" };
+  hb.innerHTML = rows.length ? rows.map(o=>{
+    const pnlCls = o.pnl > 0 ? "up" : o.pnl < 0 ? "down" : "mid";
+    const kind = o.kind === "open" ? (o.reason === "limit" ? "开仓(限价)" : "开仓") : `平仓(${reasonText[o.reason || "manual"] || "手动"})`;
+    return `<tr>
+      <td class="mid">${o.t}</td>
+      <td>${o.base}</td>
+      <td class="${o.side==="long"?"up":"down"}">${futSideLabel(o.side)}</td>
+      <td class="mid">${kind}</td>
       <td>${fmtPx(o.price)}</td>
       <td>${fmtQty(o.qty, o.base)}</td>
       <td class="${pnlCls}">${o.kind === "close" ? futFmtSign(o.pnl) : "—"}</td>
@@ -2188,12 +2248,17 @@ function renderFutures(){
     </tr>`;
   }).join("") : `<tr><td colspan="8" class="empty" style="text-align:center">暂无合约记录</td></tr>`;
 
+  // 限价委托价输入框显隐
+  document.getElementById("fLimitRow").style.display = fotype === "limit" ? "" : "none";
   renderFuturesPreview();
 }
 
 /* ---------- 总渲染 ---------- */
 function renderAll(){
   settleFunding();   // 处理到期的资金费（内部只在满 8 小时时结算）
+  checkFutOpenOrders();   // 合约限价委托触价成交
+  checkFutTpSl();         // 止盈止损自动平仓
+  checkLiquidation();     // 权益 ≤ 0 自动强平
   recordHist();   // 行情/交易每次刷新都尝试采样（内部 10 秒节流）
   document.getElementById("topUsdt").textContent = fmt(state.usdt,2) + " USDT";
   renderMarket();
@@ -2345,6 +2410,8 @@ function cancelOrder(id){
 let fBase = "BTC";
 let fSide = "long";
 let fLev = 5;
+let fotype = "market";   // 开仓类型：市价 / 限价
+let fmode = "isolated";  // 保证金模式：isolated 逐仓 / cross 全仓
 
 function futSideLabel(s){ return s === "long" ? "多" : "空"; }
 function futFmtSign(n){ return (n >= 0 ? "+" : "") + fmt(n, 2); }
@@ -2374,7 +2441,9 @@ function futReadLev(){
 
 function renderFuturesPreview(){
   const c = COINS.find(x => x.base === fBase) || COINS[0];
-  const p = priceOf(c.base);
+  const mark = priceOf(c.base);
+  const lp = parseFloat(document.getElementById("fLimitPrice").value) || 0;
+  const p = fotype === "limit" && lp > 0 ? lp : mark;   // 限价模式按委托价预估
   const lev = futReadLev();
   fLev = lev;
   document.getElementById("fLevTag").textContent = lev + "x";
@@ -2385,9 +2454,15 @@ function renderFuturesPreview(){
   document.getElementById("fPrevNotional").textContent = fmt(notional, 2) + " USDT";
   document.getElementById("fPrevQty").textContent = fmt(qty, c.prec) + " " + c.base;
   document.getElementById("fPrevFee").textContent = fmt(notional * FUT_FEE, 2) + " USDT";
-  document.getElementById("fPrevLiq").textContent = qty > 0 ? fmtPx(Math.max(liq, 0)) : "—";
+  const liqEl = document.getElementById("fPrevLiq");
+  if(fmode === "cross"){
+    liqEl.textContent = qty > 0 ? "共用池（不单列）" : "—";
+  }else{
+    liqEl.textContent = qty > 0 ? fmtPx(Math.max(liq, 0)) : "—";
+  }
   const btn = document.getElementById("fOpenBtn");
-  btn.textContent = (fSide === "long" ? "做多 " : "做空 ") + c.base + " · " + lev + "x";
+  const verb = fSide === "long" ? "做多 " : "做空 ";
+  btn.textContent = (fotype === "limit" ? "限价开" : verb) + (fotype === "limit" ? futSideLabel(fSide) + " " : "") + c.base + " · " + lev + "x · " + (fmode === "cross" ? "全仓" : "逐仓");
   btn.className = "submit " + (fSide === "long" ? "buy" : "sell");
 }
 
@@ -2400,14 +2475,22 @@ function futNextFunding(){
 }
 
 // 开仓：保证金 + 开仓手续费从可用 USDT 扣除；保证金之后只存在于持仓里
+// 限价模式下委托即冻结，触价后以委托价成交
 function openFutures(){
   const c = COINS.find(x => x.base === fBase) || COINS[0];
-  const p = priceOf(c.base);
   const lev = futReadLev();
   const margin = parseFloat(document.getElementById("fMarginInput").value) || 0;
-
-  if(!(p > 0)){ toast("价格不可用", "err"); return; }
   if(!(margin > 0)){ toast("请输入保证金", "err"); return; }
+
+  if(fotype === "limit"){
+    const lp = parseFloat(document.getElementById("fLimitPrice").value) || 0;
+    if(!(lp > 0)){ toast("请输入委托价", "err"); return; }
+    placeFutLimitOrder(c, margin, lev, lp);
+    return;
+  }
+
+  const p = priceOf(c.base);
+  if(!(p > 0)){ toast("价格不可用", "err"); return; }
   const notional = margin * lev;
   const fee = notional * FUT_FEE;
   if(margin + fee > state.usdt + 1e-9){
@@ -2420,7 +2503,7 @@ function openFutures(){
   state.futures.push({
     id: "f" + Date.now() + Math.floor(Math.random() * 1e4),
     base: c.base, side: fSide, qty, entry: p, lev, margin, fee,
-    openAt: Date.now(), lastFundAt: Date.now(),
+    openAt: Date.now(), lastFundAt: Date.now(), marginMode: fmode,
   });
   state.futOrders.push({ t: nowT(), base: c.base, side: fSide, kind: "open", price: p, qty, pnl: 0, fee });
   if(state.futOrders.length > FUT_HIST_MAX) state.futOrders = state.futOrders.slice(-FUT_HIST_MAX);
@@ -2428,11 +2511,141 @@ function openFutures(){
   document.getElementById("fMarginInput").value = "";
   document.getElementById("fLev").value = lev;
   renderAll();
-  toast(`已开${futSideLabel(fSide)} ${c.base} ${lev}x · 保证金 ${fmt(margin, 2)} USDT`, "ok");
+  toast(`已开${futSideLabel(fSide)} ${c.base} ${lev}x${fmode === "cross" ? " 全仓" : " 逐仓"} · 保证金 ${fmt(margin, 2)} USDT`, "ok");
+}
+
+// 限价开仓委托：冻结保证金 + 手续费，标记价触发后以委托价成交
+function placeFutLimitOrder(c, margin, lev, lp){
+  const notional = margin * lev;
+  const fee = notional * FUT_FEE;
+  if(margin + fee > state.usdt + 1e-9){
+    toast("可用 USDT 不足，需要 " + fmt(margin + fee, 2), "err"); return;
+  }
+  state.usdt -= margin + fee;
+  state.futOpenOrders.push({
+    id: "fo" + Date.now() + Math.floor(Math.random() * 1e4),
+    t: nowT(), base: c.base, side: fSide, lev, margin, price: lp, fee, marginMode: fmode,
+  });
+  save();
+  document.getElementById("fMarginInput").value = "";
+  document.getElementById("fLev").value = lev;
+  renderAll();
+  toast(`限价委托已挂（${fmode === "cross" ? "全仓" : "逐仓"}）：开${futSideLabel(fSide)} ${c.base} ${lev}x @ ${fmtPx(lp)}`, "ok");
+}
+
+// 触价成交：多单 标记价≤委托价，空单 标记价≥委托价；按委托价开仓
+function checkFutOpenOrders(){
+  if(!state.futOpenOrders.length) return;
+  const filled = [];
+  state.futOpenOrders = state.futOpenOrders.filter(o => {
+    const p = priceOf(o.base);
+    if(p <= 0) return true;
+    const hit = o.side === "long" ? p <= o.price : p >= o.price;
+    if(hit) filled.push(o);
+    return !hit;
+  });
+  if(!filled.length) return;
+  for(const o of filled){
+    const qty = Math.floor(o.margin * o.lev / o.price * 10 ** COINS.find(c=>c.base===o.base).prec) / 10 ** COINS.find(c=>c.base===o.base).prec;
+    if(qty <= 0){            // 价格变动导致开不出最小仓位，退回冻结资金
+      state.usdt += o.margin + o.fee;
+      toast(`限价开仓失效（数量为 0）：${o.base}，已退回 ${fmt(o.margin + o.fee, 2)} USDT`, "err");
+      continue;
+    }
+    state.futures.push({
+      id: "f" + Date.now() + Math.floor(Math.random() * 1e4),
+      base: o.base, side: o.side, qty, entry: o.price, lev: o.lev,
+      margin: o.margin, fee: o.fee, openAt: Date.now(), lastFundAt: Date.now(),
+      marginMode: o.marginMode === "cross" ? "cross" : "isolated",
+    });
+    state.futOrders.push({ t: nowT(), base: o.base, side: o.side, kind: "open", price: o.price, qty, pnl: 0, fee: o.fee, reason: "limit" });
+    toast(`限价开仓成交：开${futSideLabel(o.side)} ${o.base} ${o.lev}x @ ${fmtPx(o.price)}`, "ok");
+  }
+  if(state.futOrders.length > FUT_HIST_MAX) state.futOrders = state.futOrders.slice(-FUT_HIST_MAX);
+  save();
+  renderAll();
+}
+
+function cancelFutOpenOrder(id){
+  const i = state.futOpenOrders.findIndex(o => o.id === id);
+  if(i < 0) return;
+  const o = state.futOpenOrders[i];
+  state.futOpenOrders.splice(i, 1);
+  state.usdt += o.margin + o.fee;     // 退回冻结的保证金 + 手续费
+  save();
+  renderAll();
+  toast("已撤销限价委托", "ok");
+}
+
+// 设置止盈止损：留空表示不设
+function setFutTpSl(id){
+  const pos = state.futures.find(p => p.id === id);
+  if(!pos) return;
+  const tpRaw = prompt(`设置止盈价（留空不设）— 当前标记价 ${fmtPx(priceOf(pos.base))}`, pos.tp ? String(pos.tp) : "");
+  if(tpRaw === null) return;
+  const slRaw = prompt(`设置止损价（留空不设）— 当前标记价 ${fmtPx(priceOf(pos.base))}`, pos.sl ? String(pos.sl) : "");
+  if(slRaw === null) return;
+  const tp = tpRaw.trim() === "" ? undefined : parseFloat(tpRaw);
+  const sl = slRaw.trim() === "" ? undefined : parseFloat(slRaw);
+  if(tp !== undefined && !(tp > 0)){ toast("止盈价无效", "err"); return; }
+  if(sl !== undefined && !(sl > 0)){ toast("止损价无效", "err"); return; }
+  if(tp !== undefined) pos.tp = tp; else delete pos.tp;
+  if(sl !== undefined) pos.sl = sl; else delete pos.sl;
+  save();
+  renderAll();
+  toast(`止盈止损已更新${pos.tp ? " TP " + fmtPx(pos.tp) : ""}${pos.sl ? " SL " + fmtPx(pos.sl) : ""}`, "ok");
+}
+
+// 自动触发止盈止损：标记价穿过 TP/SL 即平仓
+function checkFutTpSl(){
+  if(!state.futures.length) return 0;
+  let n = 0;
+  for(const pos of [...state.futures]){
+    const p = priceOf(pos.base);
+    if(p <= 0) continue;
+    let trigger = null;
+    if(pos.tp){
+      const hit = pos.side === "long" ? p >= pos.tp : p <= pos.tp;
+      if(hit) trigger = "tp";
+    }
+    if(!trigger && pos.sl){
+      const hit = pos.side === "long" ? p <= pos.sl : p >= pos.sl;
+      if(hit) trigger = "sl";
+    }
+    if(trigger){ closeFutures(pos.id, trigger); n++; }
+  }
+  return n;
+}
+
+// 自动强平：逐仓看单仓是否亏光自己的保证金；全仓看共用池权益是否 ≤ 0
+function checkLiquidation(){
+  if(!state.futures.length) return 0;
+  let n = 0;
+  // 逐仓：单仓亏损 ≥ 本仓保证金即强平
+  for(const pos of [...state.futures]){
+    if(pos.marginMode === "cross") continue;
+    if(futUpnl(pos) <= -pos.margin + 1e-9){
+      closeFutures(pos.id, "liq");
+      n++;
+    }
+  }
+  // 全仓：所有全仓仓位共用保证金池，池权益 ≤ 0 时一次性全部强平
+  // 池权益已 ≤ 0，没有任何可返还资金，统一按 0 返还（不会凭空造钱）
+  const crossPos = state.futures.filter(p => p.marginMode === "cross");
+  if(crossPos.length){
+    const eq = crossPos.reduce((s,p)=> s + p.margin + futUpnl(p), 0);
+    if(eq <= 0){
+      for(const p of crossPos) closeFutures(p.id, "liq", 0);
+      n += crossPos.length;
+    }
+  }
+  return n;
 }
 
 // 平仓：按标记价结算，返还 = 保证金 + 盈亏 - 平仓手续费；亏损不超过保证金
-function closeFutures(id){
+// reason: 'manual'(默认) / 'tp' / 'sl' / 'liq'
+// forcedBack：全仓批量强平时由调用方指定返还额（已按池权益分摊），传了就覆盖默认计算
+function closeFutures(id, reason, forcedBack){
   const i = state.futures.findIndex(p => p.id === id);
   if(i < 0) return;
   const pos = state.futures[i];
@@ -2440,14 +2653,15 @@ function closeFutures(id){
   const gross = (p - pos.entry) * pos.qty * (pos.side === "long" ? 1 : -1);
   const pnl = Math.max(gross, -pos.margin);
   const fee = pos.qty * p * FUT_FEE;
-  const back = Math.max(0, pos.margin + pnl - fee);
+  const back = forcedBack !== undefined ? Math.max(0, forcedBack) : Math.max(0, pos.margin + pnl - fee);
   state.usdt += back;
   state.futures.splice(i, 1);
-  state.futOrders.push({ t: nowT(), base: pos.base, side: pos.side, kind: "close", price: p, qty: pos.qty, pnl, fee });
+  state.futOrders.push({ t: nowT(), base: pos.base, side: pos.side, kind: "close", price: p, qty: pos.qty, pnl, fee, reason: reason || "manual" });
   if(state.futOrders.length > FUT_HIST_MAX) state.futOrders = state.futOrders.slice(-FUT_HIST_MAX);
   save();
   renderAll();
-  toast(`已平${futSideLabel(pos.side)} ${pos.base} · 返还 ${fmt(back, 2)} USDT · 盈亏 ${futFmtSign(pnl)}`, pnl >= 0 ? "ok" : "err");
+  const reasonText = { tp: "止盈", sl: "止损", liq: "强平", manual: "平仓" }[reason || "manual"];
+  toast(`${reasonText} ${pos.base} ${futSideLabel(pos.side)} · 返还 ${fmt(back, 2)} USDT · 盈亏 ${futFmtSign(pnl)}`, pnl >= 0 ? "ok" : "err");
 }
 
 /* ---------- 理财动作 ---------- */
@@ -2565,10 +2779,31 @@ document.getElementById("fPctBtns").addEventListener("click", e => {
   renderFuturesPreview();
 });
 document.getElementById("fOpenBtn").addEventListener("click", openFutures);
-document.getElementById("futPosBody").addEventListener("click", e => {
-  const b = e.target.closest("[data-close-fut]");
+document.getElementById("fOtypeBtns").addEventListener("click", e => {
+  const b = e.target.closest("[data-fotype]");
   if(!b) return;
-  closeFutures(b.dataset.closeFut);
+  fotype = b.dataset.fotype;
+  document.querySelectorAll("#fOtypeBtns button").forEach(x => x.classList.toggle("on", x === b));
+  renderFuturesPreview();
+});
+document.getElementById("fModeBtns").addEventListener("click", e => {
+  const b = e.target.closest("[data-fmode]");
+  if(!b) return;
+  fmode = b.dataset.fmode;
+  document.querySelectorAll("#fModeBtns button").forEach(x => x.classList.toggle("on", x === b));
+  renderFuturesPreview();
+});
+document.getElementById("fLimitPrice").addEventListener("input", renderFuturesPreview);
+document.getElementById("futPosBody").addEventListener("click", e => {
+  let b = e.target.closest("[data-close-fut]");
+  if(b){ closeFutures(b.dataset.closeFut); return; }
+  b = e.target.closest("[data-tpsl]");
+  if(b){ setFutTpSl(b.dataset.tpsl); return; }
+});
+document.getElementById("futOrderBody").addEventListener("click", e => {
+  const b = e.target.closest("[data-cancel-fut]");
+  if(!b) return;
+  cancelFutOpenOrder(b.dataset.cancelFut);
 });
 
 document.getElementById("marketBody").addEventListener("click", e=>{
@@ -2758,7 +2993,7 @@ renderAll();
 fetchPrices();
 fetchKlines(true);
 setInterval(()=>{ fetchPrices(); fetchKlines(); }, 15000);
-setInterval(()=>{ settleFunding(); renderEarn(); renderAssets(); renderFutures(); document.getElementById("topUsdt").textContent = fmt(state.usdt,2) + " USDT"; }, 5000);
+setInterval(()=>{ settleFunding(); checkFutOpenOrders(); checkFutTpSl(); checkLiquidation(); renderEarn(); renderAssets(); renderFutures(); document.getElementById("topUsdt").textContent = fmt(state.usdt,2) + " USDT"; }, 5000);
 </script>
 </body>
 </html>
