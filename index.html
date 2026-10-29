@@ -65,6 +65,9 @@ input{font-family:inherit;font-size:inherit}
   .card{overflow-x:auto}          /* 表格较宽时卡片内横向滚动，不撑破页面 */
   #view-market th:nth-child(4),#view-market td:nth-child(4){display:none}  /* 手机隐藏 24h 高低 */
   .notice{align-items:flex-start}
+  /* 合约概览在手机上两列排布，避免 4 张 KPI 卡纵向堆太高 */
+  #view-futures .g4{grid-template-columns:repeat(2,minmax(0,1fr))}
+  #view-futures .kpi{font-size:17px}
 }
 
 .card{background:var(--panel);border:1px solid var(--border);border-radius:var(--r);padding:14px}
@@ -118,6 +121,11 @@ tbody tr:hover{background:var(--panel2)}
 .side-tabs button{flex:1;padding:9px;border-radius:6px;font-weight:600;font-size:13px;background:var(--panel2);color:var(--muted)}
 .side-tabs button.buy.on{background:var(--green);color:#0b0e11}
 .side-tabs button.sell.on{background:var(--red);color:#fff}
+/* 合约方向按钮独立一套 class，避免和现货 side-tabs 的事件/选中态互相干扰 */
+.fside{display:flex;gap:4px;margin-bottom:12px}
+.fside button{flex:1;padding:9px;border-radius:6px;font-weight:600;font-size:13px;background:var(--panel2);color:var(--muted)}
+.fside button.long.on{background:var(--green);color:#0b0e11}
+.fside button.short.on{background:var(--red);color:#fff}
 
 .field{margin-bottom:10px}
 .field label{display:block;font-size:12px;color:var(--muted);margin-bottom:6px}
@@ -182,6 +190,7 @@ tbody tr:hover{background:var(--panel2)}
   <div class="tabs">
     <button class="tab on" data-view="market">行情</button>
     <button class="tab" data-view="trade">交易</button>
+    <button class="tab" data-view="futures">合约</button>
     <button class="tab" data-view="assets">资产</button>
     <button class="tab" data-view="orders">订单</button>
     <button class="tab" data-view="earn">收益</button>
@@ -202,7 +211,7 @@ tbody tr:hover{background:var(--panel2)}
   <!-- 行情 -->
   <section id="view-market">
     <div class="grid g3" style="margin-bottom:12px">
-      <div class="card"><h3>总资产估值</h3><div class="kpi" id="mTotal">—</div><div class="sub">可用 USDT + 持仓市值 + 理财本金</div></div>
+      <div class="card"><h3>总资产估值</h3><div class="kpi" id="mTotal">—</div><div class="sub">可用 USDT + 持仓市值 + 理财本金 + 合约权益</div></div>
       <div class="card"><h3>可用 USDT</h3><div class="kpi" id="mUsdt">—</div><div class="sub">可直接下单</div></div>
       <div class="card"><h3>持仓浮盈亏</h3><div class="kpi" id="mPnl">—</div><div class="sub">按最新价与成本价计算</div></div>
     </div>
@@ -312,6 +321,75 @@ tbody tr:hover{background:var(--panel2)}
           <thead><tr><th>时间</th><th>方向</th><th>数量</th><th>价格</th></tr></thead>
           <tbody id="orderBody"></tbody>
         </table>
+      </div>
+    </div>
+  </section>
+
+  <!-- 合约（模拟，无真实杠杆/强平） -->
+  <section id="view-futures" class="hidden">
+    <div class="grid g4" style="margin-bottom:12px">
+      <div class="card"><h3>合约权益</h3><div class="kpi" id="fEquity">—</div><div class="sub">保证金 + 未实现盈亏</div></div>
+      <div class="card"><h3>未实现盈亏</h3><div class="kpi" id="fUpnl">—</div><div class="sub">按最新标记价计算</div></div>
+      <div class="card"><h3>占用保证金</h3><div class="kpi" id="fMargin">—</div><div class="sub">已从可用 USDT 划出</div></div>
+      <div class="card"><h3>资金费率</h3><div class="kpi" id="fFundRate">0.01%</div><div class="sub" id="fFundNext">每 8 小时结算 · 多付空收</div></div>
+    </div>
+    <div class="grid trade-grid">
+      <div class="card">
+        <h3>开仓 <span class="mid" style="font-weight:400;font-size:11px">手续费 0.05% · 最高 20x</span></h3>
+        <div class="tf" id="fCoinBtns" style="margin-bottom:12px">
+          <button data-fcoin="BTC" class="on">BTC</button>
+          <button data-fcoin="ETH">ETH</button>
+          <button data-fcoin="BNB">BNB</button>
+          <button data-fcoin="SOL">SOL</button>
+          <button data-fcoin="XRP">XRP</button>
+          <button data-fcoin="DOGE">DOGE</button>
+        </div>
+        <div class="fside" id="fSideBtns">
+          <button class="long on" data-fside="long">做多</button>
+          <button class="short" data-fside="short">做空</button>
+        </div>
+        <div class="field">
+          <label for="fLev">杠杆 <span class="mid" id="fLevTag">5x</span></label>
+          <div class="row"><input id="fLev" type="text" inputmode="numeric" value="5"><span class="unit">倍</span></div>
+        </div>
+        <div class="tf" id="fLevBtns" style="margin-bottom:12px">
+          <button data-flev="1">1x</button>
+          <button data-flev="3">3x</button>
+          <button data-flev="5" class="on">5x</button>
+          <button data-flev="10">10x</button>
+          <button data-flev="20">20x</button>
+        </div>
+        <div class="field">
+          <label for="fMarginInput">保证金</label>
+          <div class="row"><input id="fMarginInput" type="text" inputmode="decimal" placeholder="0.00"><span class="unit">USDT</span></div>
+        </div>
+        <div class="pcts" id="fPctBtns">
+          <button data-fpct="0.25">25%</button>
+          <button data-fpct="0.5">50%</button>
+          <button data-fpct="0.75">75%</button>
+          <button data-fpct="1">100%</button>
+        </div>
+        <div class="card" style="background:var(--panel2);padding:10px;margin-bottom:12px;font-size:12px">
+          <div style="display:flex;justify-content:space-between;margin-bottom:4px"><span class="mid">持仓价值</span><span id="fPrevNotional">0.00 USDT</span></div>
+          <div style="display:flex;justify-content:space-between;margin-bottom:4px"><span class="mid">开仓数量</span><span id="fPrevQty">0.00</span></div>
+          <div style="display:flex;justify-content:space-between;margin-bottom:4px"><span class="mid">开仓手续费</span><span id="fPrevFee">0.00 USDT</span></div>
+          <div style="display:flex;justify-content:space-between"><span class="mid">预估强平价</span><span id="fPrevLiq">—</span></div>
+        </div>
+        <button class="submit buy" id="fOpenBtn">做多 BTC · 5x</button>
+      </div>
+
+      <div class="card">
+        <h3>当前合约持仓 <span class="mid" style="font-weight:400;font-size:11px">平仓按最新标记价成交</span></h3>
+        <table>
+          <thead><tr><th>币种</th><th>方向</th><th>杠杆</th><th>数量</th><th>开仓价</th><th>标记价</th><th>保证金</th><th>未实现盈亏</th><th>强平价</th><th>操作</th></tr></thead>
+          <tbody id="futPosBody"></tbody>
+        </table>
+        <h3 style="margin-top:20px">合约记录 <span class="mid" style="font-weight:400;font-size:11px">最近 50 条</span></h3>
+        <table>
+          <thead><tr><th>时间</th><th>币种</th><th>方向</th><th>类型</th><th>价格</th><th>数量</th><th>盈亏</th><th>手续费</th></tr></thead>
+          <tbody id="futHistBody"></tbody>
+        </table>
+        <div class="sub" style="margin-top:12px">仅模拟：不接入真实合约账户，不做自动强平，强平价只作展示。</div>
       </div>
     </div>
   </section>
@@ -430,7 +508,7 @@ tbody tr:hover{background:var(--panel2)}
   </section>
 
   <div class="foot">
-    模拟交易所 · Paper Exchange — 仅用于界面与流程演示 · build <span id="buildVer">20261029-10</span><br>
+    模拟交易所 · Paper Exchange — 仅用于界面与流程演示 · build <span id="buildVer">20261029-11</span><br>
     不构成投资建议，不涉及真实资金、真实交易、真实收益
   </div>
 </div>
@@ -468,6 +546,13 @@ const STORE_KEY = "paper_exchange_v1";
 const DEP_KEY = "paper_exchange_deposited_v1";   // 净投入累计独立存储，防旧版标签页覆盖
 const START_USDT = 10000;
 
+/* 合约模拟参数：只做纸面记账，不接真实合约账户 */
+const FUT_FEE = 0.0005;              // 开/平仓手续费 0.05%
+const FUT_FUND_RATE = 0.0001;        // 资金费率 0.01% / 8 小时（多付空收）
+const FUT_FUND_MS = 8 * 3600 * 1000; // 资金费结算周期
+const FUT_MAX_LEV = 20;              // 最高杠杆
+const FUT_HIST_MAX = 50;             // 合约记录上限
+
 /* ---------- 状态 ---------- */
 let state = null;
 let prices = {};        // { BTC: 68000, ... }
@@ -487,6 +572,8 @@ function defaultState(){
     earns: [],          // {id, productId, base, qty, apy, startAt, days}
     member: { tier:"FREE", expireAt:0 },
     hist: [],           // 总资产采样点 {t, v}，盈亏走势图用
+    futures: [],        // 合约持仓 {id, base, side:'long'|'short', qty, entry, lev, margin, fee, openAt, lastFundAt}
+    futOrders: [],      // 合约开/平仓记录，最近 50 条
     deposited: 0,       // 「模拟充值」累计额，算盈亏时从总资产里扣除（充值不算盈利）
     createdAt: Date.now(),
   };
@@ -512,6 +599,20 @@ function load(){
   if(typeof state.member.expireAt !== "number" || !isFinite(state.member.expireAt)) state.member.expireAt = 0;
   if(!Array.isArray(state.hist)) state.hist = [];
   state.hist = state.hist.filter(p => p && typeof p.t === "number" && typeof p.v === "number" && isFinite(p.v) && p.v >= 0);
+  // 合约字段：旧存档没有这两个字段，缺省补空数组，不能崩
+  if(!Array.isArray(state.futures)) state.futures = [];
+  state.futures = state.futures.filter(p => {
+    if(!p || !COINS.some(c => c.base === p.base)) return false;
+    if(p.side !== "long" && p.side !== "short") return false;
+    if(!(typeof p.qty === "number" && isFinite(p.qty) && p.qty > 0)) return false;
+    if(!(typeof p.entry === "number" && isFinite(p.entry) && p.entry > 0)) return false;
+    if(!(typeof p.lev === "number" && isFinite(p.lev) && p.lev >= 1 && p.lev <= FUT_MAX_LEV)) p.lev = 1;
+    if(!(typeof p.margin === "number" && isFinite(p.margin) && p.margin >= 0)) p.margin = 0;
+    if(!(typeof p.lastFundAt === "number" && isFinite(p.lastFundAt))) p.lastFundAt = Date.now();
+    return true;
+  });
+  if(!Array.isArray(state.futOrders)) state.futOrders = [];
+  state.futOrders = state.futOrders.filter(o => o && typeof o.t === "string" && COINS.some(c => c.base === o.base));
   // deposited 走独立键：旧版本标签页重写主存档时不会把这个字段抹掉
   const depRaw = parseFloat(localStorage.getItem(DEP_KEY));
   if(isFinite(depRaw) && depRaw >= 0){
@@ -590,10 +691,25 @@ function earnPrincipalValue(){
 function earnAccruedTotal(){
   return state.earns.reduce((s,e)=> s + earnAccrued(e) * priceOf(e.base), 0);
 }
+/* 合约：未实现盈亏 / 强平价 / 权益 */
+function futUpnl(pos){
+  const d = priceOf(pos.base) - pos.entry;
+  return d * pos.qty * (pos.side === "long" ? 1 : -1);
+}
+// 强平价：亏光保证金的价格（线性合约，忽略维持保证金，仅展示用）
+function futLiqPrice(pos){
+  const liq = pos.side === "long" ? pos.entry - pos.margin / pos.qty : pos.entry + pos.margin / pos.qty;
+  return Math.max(liq, 0);
+}
+// 合约权益 = Σ max(0, 保证金 + 未实现盈亏)；保证金已从 state.usdt 划出，这里加回来
+function futuresEquity(){
+  return state.futures.reduce((s,p)=> s + Math.max(0, p.margin + futUpnl(p)), 0);
+}
 function totalAssets(){
   let t = state.usdt;
   for(const c of COINS) t += holdValue(c.base);
   t += earnPrincipalValue() + earnAccruedTotal();
+  t += futuresEquity();      // 合约保证金 + 未实现盈亏，开仓不会让总资产凭空缩水
   return t;
 }
 function totalPnl(){
@@ -1712,6 +1828,8 @@ function renderAssets(){
   }
   const ev = earnPrincipalValue() + earnAccruedTotal();
   if(ev > 0) parts.push({ label:"理财", v:ev, color:"#c084fc" });
+  const fv = futuresEquity();
+  if(fv > 0) parts.push({ label:"合约", v:fv, color:"#ff9f43" });
 
   const total = parts.reduce((s,x)=>s+x.v,0);
   const sum = total || 1;              // 仅作百分比分母，避免除零
@@ -2024,12 +2142,63 @@ function exportOrdersCsv(){
 }
 document.getElementById("btnExportCsv").addEventListener("click", exportOrdersCsv);
 
+/* ---------- 渲染：合约 ---------- */
+function renderFutures(){
+  const upnl = state.futures.reduce((s,p)=> s + futUpnl(p), 0);
+  const marginSum = state.futures.reduce((s,p)=> s + p.margin, 0);
+  document.getElementById("fEquity").textContent = fmt(futuresEquity(), 2) + " USDT";
+  const upEl = document.getElementById("fUpnl");
+  upEl.textContent = futFmtSign(upnl) + " USDT";
+  upEl.className = "kpi " + (upnl > 0 ? "up" : upnl < 0 ? "down" : "mid");
+  document.getElementById("fMargin").textContent = fmt(marginSum, 2) + " USDT";
+  document.getElementById("fFundNext").textContent = "每 8 小时 · " + futNextFunding();
+
+  const tb = document.getElementById("futPosBody");
+  tb.innerHTML = state.futures.length ? state.futures.slice().reverse().map(pos=>{
+    const p = priceOf(pos.base);
+    const u = futUpnl(pos);
+    const cls = u > 0 ? "up" : u < 0 ? "down" : "mid";
+    return `<tr>
+      <td>${pos.base}</td>
+      <td class="${pos.side==="long"?"up":"down"}">${futSideLabel(pos.side)}</td>
+      <td>${pos.lev}x</td>
+      <td>${fmtQty(pos.qty, pos.base)}</td>
+      <td class="mid">${fmtPx(pos.entry)}</td>
+      <td>${fmtPx(p)}</td>
+      <td>${fmt(pos.margin,2)}</td>
+      <td class="${cls}">${futFmtSign(u)}</td>
+      <td class="mid">${fmtPx(futLiqPrice(pos))}</td>
+      <td><button class="trade-btn" data-close-fut="${pos.id}">平仓</button></td>
+    </tr>`;
+  }).join("") : `<tr><td colspan="10" class="empty" style="text-align:center">暂无合约持仓</td></tr>`;
+
+  const hb = document.getElementById("futHistBody");
+  const rows = state.futOrders.slice().reverse();
+  hb.innerHTML = rows.length ? rows.map(o=>{
+    const pnlCls = o.pnl > 0 ? "up" : o.pnl < 0 ? "down" : "mid";
+    return `<tr>
+      <td class="mid">${o.t}</td>
+      <td>${o.base}</td>
+      <td class="${o.side==="long"?"up":"down"}">${futSideLabel(o.side)}</td>
+      <td class="mid">${o.kind === "open" ? "开仓" : "平仓"}</td>
+      <td>${fmtPx(o.price)}</td>
+      <td>${fmtQty(o.qty, o.base)}</td>
+      <td class="${pnlCls}">${o.kind === "close" ? futFmtSign(o.pnl) : "—"}</td>
+      <td class="mid">${fmt(o.fee,2)}</td>
+    </tr>`;
+  }).join("") : `<tr><td colspan="8" class="empty" style="text-align:center">暂无合约记录</td></tr>`;
+
+  renderFuturesPreview();
+}
+
 /* ---------- 总渲染 ---------- */
 function renderAll(){
+  settleFunding();   // 处理到期的资金费（内部只在满 8 小时时结算）
   recordHist();   // 行情/交易每次刷新都尝试采样（内部 10 秒节流）
   document.getElementById("topUsdt").textContent = fmt(state.usdt,2) + " USDT";
   renderMarket();
   renderTrade();
+  renderFutures();
   renderAssets();
   renderOrders();
   renderEarn();
@@ -2172,6 +2341,115 @@ function cancelOrder(id){
   toast("已撤单", "ok");
 }
 
+/* ---------- 合约动作 ---------- */
+let fBase = "BTC";
+let fSide = "long";
+let fLev = 5;
+
+function futSideLabel(s){ return s === "long" ? "多" : "空"; }
+function futFmtSign(n){ return (n >= 0 ? "+" : "") + fmt(n, 2); }
+
+// 资金费结算：多付空收，按开仓名义价值计费，每满 8 小时结算一次，直接从保证金里加减
+function settleFunding(now = Date.now()){
+  if(!state.futures.length) return false;
+  let changed = false;
+  for(const pos of state.futures){
+    if(!(pos.lastFundAt > 0)){ pos.lastFundAt = now; continue; }
+    const periods = Math.floor((now - pos.lastFundAt) / FUT_FUND_MS);
+    if(periods <= 0) continue;
+    pos.lastFundAt += periods * FUT_FUND_MS;
+    const amt = pos.qty * pos.entry * FUT_FUND_RATE * periods;
+    if(pos.side === "long") pos.margin = Math.max(0, pos.margin - amt);
+    else pos.margin += amt;
+    changed = true;
+  }
+  if(changed) save();
+  return changed;
+}
+
+function futReadLev(){
+  const v = Math.round(parseFloat(document.getElementById("fLev").value));
+  return isFinite(v) && v >= 1 ? Math.min(FUT_MAX_LEV, v) : 1;
+}
+
+function renderFuturesPreview(){
+  const c = COINS.find(x => x.base === fBase) || COINS[0];
+  const p = priceOf(c.base);
+  const lev = futReadLev();
+  fLev = lev;
+  document.getElementById("fLevTag").textContent = lev + "x";
+  const margin = parseFloat(document.getElementById("fMarginInput").value) || 0;
+  const notional = margin * lev;
+  const qty = p > 0 ? Math.floor(notional / p * 10 ** c.prec) / 10 ** c.prec : 0;
+  const liq = qty > 0 ? (fSide === "long" ? p - margin / qty : p + margin / qty) : 0;
+  document.getElementById("fPrevNotional").textContent = fmt(notional, 2) + " USDT";
+  document.getElementById("fPrevQty").textContent = fmt(qty, c.prec) + " " + c.base;
+  document.getElementById("fPrevFee").textContent = fmt(notional * FUT_FEE, 2) + " USDT";
+  document.getElementById("fPrevLiq").textContent = qty > 0 ? fmtPx(Math.max(liq, 0)) : "—";
+  const btn = document.getElementById("fOpenBtn");
+  btn.textContent = (fSide === "long" ? "做多 " : "做空 ") + c.base + " · " + lev + "x";
+  btn.className = "submit " + (fSide === "long" ? "buy" : "sell");
+}
+
+function futNextFunding(){
+  if(!state.futures.length) return "暂无持仓";
+  const next = Math.min(...state.futures.map(p => p.lastFundAt + FUT_FUND_MS));
+  const ms = Math.max(0, next - Date.now());
+  const h = Math.floor(ms / 3600000), m = Math.floor(ms % 3600000 / 60000);
+  return `下次结算 ${h}h ${m}m 后`;
+}
+
+// 开仓：保证金 + 开仓手续费从可用 USDT 扣除；保证金之后只存在于持仓里
+function openFutures(){
+  const c = COINS.find(x => x.base === fBase) || COINS[0];
+  const p = priceOf(c.base);
+  const lev = futReadLev();
+  const margin = parseFloat(document.getElementById("fMarginInput").value) || 0;
+
+  if(!(p > 0)){ toast("价格不可用", "err"); return; }
+  if(!(margin > 0)){ toast("请输入保证金", "err"); return; }
+  const notional = margin * lev;
+  const fee = notional * FUT_FEE;
+  if(margin + fee > state.usdt + 1e-9){
+    toast("可用 USDT 不足，需要 " + fmt(margin + fee, 2), "err"); return;
+  }
+  const qty = Math.floor(notional / p * 10 ** c.prec) / 10 ** c.prec;
+  if(qty <= 0){ toast("保证金太小，开不出最小仓位", "err"); return; }
+
+  state.usdt -= margin + fee;
+  state.futures.push({
+    id: "f" + Date.now() + Math.floor(Math.random() * 1e4),
+    base: c.base, side: fSide, qty, entry: p, lev, margin, fee,
+    openAt: Date.now(), lastFundAt: Date.now(),
+  });
+  state.futOrders.push({ t: nowT(), base: c.base, side: fSide, kind: "open", price: p, qty, pnl: 0, fee });
+  if(state.futOrders.length > FUT_HIST_MAX) state.futOrders = state.futOrders.slice(-FUT_HIST_MAX);
+  save();
+  document.getElementById("fMarginInput").value = "";
+  document.getElementById("fLev").value = lev;
+  renderAll();
+  toast(`已开${futSideLabel(fSide)} ${c.base} ${lev}x · 保证金 ${fmt(margin, 2)} USDT`, "ok");
+}
+
+// 平仓：按标记价结算，返还 = 保证金 + 盈亏 - 平仓手续费；亏损不超过保证金
+function closeFutures(id){
+  const i = state.futures.findIndex(p => p.id === id);
+  if(i < 0) return;
+  const pos = state.futures[i];
+  const p = priceOf(pos.base);
+  const gross = (p - pos.entry) * pos.qty * (pos.side === "long" ? 1 : -1);
+  const pnl = Math.max(gross, -pos.margin);
+  const fee = pos.qty * p * FUT_FEE;
+  const back = Math.max(0, pos.margin + pnl - fee);
+  state.usdt += back;
+  state.futures.splice(i, 1);
+  state.futOrders.push({ t: nowT(), base: pos.base, side: pos.side, kind: "close", price: p, qty: pos.qty, pnl, fee });
+  if(state.futOrders.length > FUT_HIST_MAX) state.futOrders = state.futOrders.slice(-FUT_HIST_MAX);
+  save();
+  renderAll();
+  toast(`已平${futSideLabel(pos.side)} ${pos.base} · 返还 ${fmt(back, 2)} USDT · 盈亏 ${futFmtSign(pnl)}`, pnl >= 0 ? "ok" : "err");
+}
+
 /* ---------- 理财动作 ---------- */
 function openEarnPrompt(productId){
   const prod = EARN_PRODUCTS.find(p=>p.id===productId);
@@ -2244,8 +2522,53 @@ document.querySelectorAll(".tab").forEach(btn=>{
       sec.classList.toggle("hidden", sec.id !== "view-"+v);
     });
     if(v === "trade") drawKline();   // 画布在隐藏状态下宽度为 0，显示后需重绘
+    if(v === "futures") renderFutures();
     window.scrollTo({ top:0, behavior:"smooth" });
   });
+});
+
+/* ---------- 合约事件 ---------- */
+document.getElementById("fCoinBtns").addEventListener("click", e => {
+  const b = e.target.closest("[data-fcoin]");
+  if(!b) return;
+  fBase = b.dataset.fcoin;
+  document.querySelectorAll("#fCoinBtns button").forEach(x => x.classList.toggle("on", x === b));
+  renderFuturesPreview();
+});
+document.getElementById("fSideBtns").addEventListener("click", e => {
+  const b = e.target.closest("[data-fside]");
+  if(!b) return;
+  fSide = b.dataset.fside;
+  document.querySelectorAll("#fSideBtns button").forEach(x => x.classList.toggle("on", x === b));
+  renderFuturesPreview();
+});
+document.getElementById("fLevBtns").addEventListener("click", e => {
+  const b = e.target.closest("[data-flev]");
+  if(!b) return;
+  document.getElementById("fLev").value = b.dataset.flev;
+  document.querySelectorAll("#fLevBtns button").forEach(x => x.classList.toggle("on", x === b));
+  renderFuturesPreview();
+});
+document.getElementById("fLev").addEventListener("input", () => {
+  const lev = futReadLev();
+  document.querySelectorAll("#fLevBtns button").forEach(x => x.classList.toggle("on", +x.dataset.flev === lev));
+  renderFuturesPreview();
+});
+document.getElementById("fMarginInput").addEventListener("input", renderFuturesPreview);
+document.getElementById("fPctBtns").addEventListener("click", e => {
+  const b = e.target.closest("[data-fpct]");
+  if(!b) return;
+  const lev = futReadLev();
+  const maxMargin = state.usdt / (1 + FUT_FEE * lev);   // 预留开仓手续费
+  const v = Math.floor(maxMargin * parseFloat(b.dataset.fpct) * 100) / 100;
+  document.getElementById("fMarginInput").value = v > 0 ? String(v) : "";
+  renderFuturesPreview();
+});
+document.getElementById("fOpenBtn").addEventListener("click", openFutures);
+document.getElementById("futPosBody").addEventListener("click", e => {
+  const b = e.target.closest("[data-close-fut]");
+  if(!b) return;
+  closeFutures(b.dataset.closeFut);
 });
 
 document.getElementById("marketBody").addEventListener("click", e=>{
@@ -2435,7 +2758,7 @@ renderAll();
 fetchPrices();
 fetchKlines(true);
 setInterval(()=>{ fetchPrices(); fetchKlines(); }, 15000);
-setInterval(()=>{ renderEarn(); renderAssets(); document.getElementById("topUsdt").textContent = fmt(state.usdt,2) + " USDT"; }, 5000);
+setInterval(()=>{ settleFunding(); renderEarn(); renderAssets(); renderFutures(); document.getElementById("topUsdt").textContent = fmt(state.usdt,2) + " USDT"; }, 5000);
 </script>
 </body>
 </html>
