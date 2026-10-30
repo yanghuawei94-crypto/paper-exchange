@@ -484,9 +484,10 @@ tbody tr:hover{background:var(--panel2)}
         <!-- 盈亏分析：基于合约记录中的平仓单，按币种×方向聚合已实现盈亏与胜率；时间筛选只影响本面板 -->
         <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;margin:20px 0 10px">
           <h3 style="margin:0">盈亏分析 <span class="mid" style="font-weight:400;font-size:11px">已实现 · 分币种/方向 · 基于最近 50 条合约记录中的平仓单</span></h3>
-          <span style="display:flex;align-items:center;gap:8px">
+          <span style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
             <span class="mid" id="fstatCount" style="font-size:12px"></span>
-            <button class="trade-btn" id="btnExportFstat">导出 CSV</button>
+            <button class="trade-btn" id="btnExportFstat">导出明细 CSV</button>
+            <button class="trade-btn" id="btnExportFstatAgg">导出汇总 CSV</button>
           </span>
         </div>
         <div class="tf" style="margin-bottom:6px" id="fstatTimeFilter">
@@ -495,7 +496,12 @@ tbody tr:hover{background:var(--panel2)}
           <button data-ftime="7d">近 7 天</button>
           <button data-ftime="30d">近 30 天</button>
         </div>
-        <div class="tf" style="margin-bottom:10px" id="fstatCoinFilter"></div>
+        <div class="tf" style="margin-bottom:6px" id="fstatCoinFilter"></div>
+        <div class="tf" style="margin-bottom:10px" id="fstatSideFilter">
+          <button data-fside="all" class="on">全部方向</button>
+          <button data-fside="long">多</button>
+          <button data-fside="short">空</button>
+        </div>
         <div class="grid g4" style="margin:10px 0">
           <div class="card"><h3>已实现盈亏</h3><div class="kpi sm" id="fstatPnl">—</div><div class="sub">平仓单盈亏合计（未扣费）</div></div>
           <div class="card"><h3>平仓手续费</h3><div class="kpi sm" id="fstatFee">—</div><div class="sub">平仓端手续费合计</div></div>
@@ -692,7 +698,7 @@ tbody tr:hover{background:var(--panel2)}
   </section>
 
   <div class="foot">
-    模拟交易所 · Paper Exchange — 仅用于界面与流程演示 · build <span id="buildVer">20261030-33</span><br>
+    模拟交易所 · Paper Exchange — 仅用于界面与流程演示 · build <span id="buildVer">20261030-34</span><br>
     不构成投资建议，不涉及真实资金、真实交易、真实收益
   </div>
 </div>
@@ -3379,11 +3385,13 @@ function renderFutures(){
 /* ---------- 合约盈亏分析 ---------- */
 let fstatTime = "all";   // all / 1d / 7d / 30d，与风险面板时间筛选同一语义（今天 = 当天 0 点起）
 let fstatCoin = "all";   // all 或具体币种，与时间筛选叠加生效
+let fstatSide = "all";   // all / long / short，与时间、币种筛选叠加生效
 
 // 按时间筛选平仓单（渲染与计数共用）
 function fstatCloses(){
   let all = state.futOrders.filter(o => o.kind === "close");
   if(fstatCoin !== "all") all = all.filter(o => o.base === fstatCoin);
+  if(fstatSide !== "all") all = all.filter(o => o.side === fstatSide);
   if(fstatTime === "all") return all;
   const days = { "1d": 1, "7d": 7, "30d": 30 }[fstatTime] || 0;
   if(!days) return all;
@@ -3410,6 +3418,15 @@ document.getElementById("fstatCoinFilter").addEventListener("click", e => {
   renderFutStats();
 });
 
+// 方向筛选切换
+document.getElementById("fstatSideFilter").addEventListener("click", e => {
+  const b = e.target.closest("button");
+  if(!b || !b.dataset.fside) return;
+  fstatSide = b.dataset.fside;
+  document.querySelectorAll("#fstatSideFilter [data-fside]").forEach(x => x.classList.toggle("on", x === b));
+  renderFutStats();
+});
+
 // 币种按钮按当前已有平仓单动态生成（选中币种即使暂时无记录也保留在列表里，避免按钮消失）
 function renderFstatCoinFilter(){
   const box = document.getElementById("fstatCoinFilter");
@@ -3424,14 +3441,8 @@ function renderFstatCoinFilter(){
     coins.map(c => `<button data-fcoin="${c}" class="${fstatCoin === c ? "on" : ""}">${c}</button>`).join("");
 }
 
-// 平仓单聚合：pnl 为已实现盈亏（未扣平仓手续费），fee 为平仓手续费；胜 = pnl > 0
-function renderFutStats(){
-  const pnlEl = document.getElementById("fstatPnl");
-  if(!pnlEl) return;
-  renderFstatCoinFilter();
-  const closes = fstatCloses();
-  const allClosed = state.futOrders.filter(o => o.kind === "close");
-  // 按 币种×方向 聚合（key 用 base|side，输出按合计净盈亏绝对值降序）
+// 聚合：按 币种×方向 汇总笔数/胜负/盈亏/手续费，按净盈亏绝对值降序（面板与汇总 CSV 共用）
+function fstatAgg(closes){
   const groups = {};
   for(const o of closes){
     const key = o.base + "|" + o.side;
@@ -3442,7 +3453,17 @@ function renderFutStats(){
     g.pnl += o.pnl;
     g.fee += o.fee;
   }
-  const rows = Object.values(groups).sort((a, b) => Math.abs(b.pnl - b.fee) - Math.abs(a.pnl - a.fee));
+  return Object.values(groups).sort((a, b) => Math.abs(b.pnl - b.fee) - Math.abs(a.pnl - a.fee));
+}
+
+// 平仓单聚合：pnl 为已实现盈亏（未扣平仓手续费），fee 为平仓手续费；胜 = pnl > 0
+function renderFutStats(){
+  const pnlEl = document.getElementById("fstatPnl");
+  if(!pnlEl) return;
+  renderFstatCoinFilter();
+  const closes = fstatCloses();
+  const allClosed = state.futOrders.filter(o => o.kind === "close");
+  const rows = fstatAgg(closes);
   // 顶部 KPI：合计
   const tPnl = closes.reduce((s, o) => s + o.pnl, 0);
   const tFee = closes.reduce((s, o) => s + o.fee, 0);
@@ -3466,7 +3487,9 @@ function renderFutStats(){
   const cntEl = document.getElementById("fstatCount");
   if(cntEl) cntEl.textContent = allClosed.length ? `${closes.length} / ${allClosed.length} 笔` : "";
   const exBtn = document.getElementById("btnExportFstat");
-  if(exBtn) exBtn.textContent = closes.length ? `导出 CSV（${closes.length}）` : "导出 CSV";
+  if(exBtn) exBtn.textContent = closes.length ? `导出明细 CSV（${closes.length}）` : "导出明细 CSV";
+  const aggBtn = document.getElementById("btnExportFstatAgg");
+  if(aggBtn) aggBtn.textContent = rows.length ? `导出汇总 CSV（${rows.length}）` : "导出汇总 CSV";
   // 明细表
   const el = document.getElementById("fstatBody");
   el.innerHTML = rows.length ? rows.map(g => {
@@ -3506,10 +3529,32 @@ function exportFutStatsCsv(){
   const sumFee = list.reduce((s, o) => s + o.fee, 0);
   rows.push(["合计", "", "", "", "", "", fmt(sumPnl, 4), fmt(sumFee, 4), fmt(sumPnl - sumFee, 4)]);
   const coinTag = fstatCoin === "all" ? "" : `_${fstatCoin}`;
-  downloadCsv(rows, `futstats_${fstatTime}${coinTag}_${new Date().toISOString().slice(0, 19).replace(/[:T]/g, "-")}.csv`);
+  const sideTag = fstatSide === "all" ? "" : `_${fstatSide}`;
+  downloadCsv(rows, `futstats_detail_${fstatTime}${coinTag}${sideTag}_${new Date().toISOString().slice(0, 19).replace(/[:T]/g, "-")}.csv`);
   toast(`已导出 ${list.length} 条平仓记录 CSV`, "ok");
 }
 document.getElementById("btnExportFstat").addEventListener("click", exportFutStatsCsv);
+
+// 导出聚合汇总 CSV：按币种×方向的汇总表 + 合计行，与面板明细表完全同口径
+function exportFutStatsAggCsv(){
+  const closes = fstatCloses();
+  if(!closes.length){ toast("当前筛选下无平仓记录可汇总", "err"); return; }
+  const rows = [["币种","方向","平仓笔数","胜","负","胜率(%)","已实现盈亏(USDT)","平仓手续费(USDT)","净盈亏(USDT)"]];
+  let tPnl = 0, tFee = 0, tWin = 0;
+  for(const g of fstatAgg(closes)){
+    const gNet = g.pnl - g.fee;
+    rows.push([g.base, futSideLabel(g.side), g.n, g.win, g.n - g.win,
+      fmt(g.win / g.n * 100, 1), fmt(g.pnl, 4), fmt(g.fee, 4), fmt(gNet, 4)]);
+    tPnl += g.pnl; tFee += g.fee; tWin += g.win;
+  }
+  rows.push(["合计", "", closes.length, tWin, closes.length - tWin,
+    fmt(tWin / closes.length * 100, 1), fmt(tPnl, 4), fmt(tFee, 4), fmt(tPnl - tFee, 4)]);
+  const coinTag = fstatCoin === "all" ? "" : `_${fstatCoin}`;
+  const sideTag = fstatSide === "all" ? "" : `_${fstatSide}`;
+  downloadCsv(rows, `futstats_agg_${fstatTime}${coinTag}${sideTag}_${new Date().toISOString().slice(0, 19).replace(/[:T]/g, "-")}.csv`);
+  toast(`已导出 ${rows.length - 2} 组汇总 CSV`, "ok");
+}
+document.getElementById("btnExportFstatAgg").addEventListener("click", exportFutStatsAggCsv);
 
 /* ---------- 总渲染 ---------- */
 function renderAll(){
