@@ -703,7 +703,7 @@ tbody tr:hover{background:var(--panel2)}
   </section>
 
   <div class="foot">
-    模拟交易所 · Paper Exchange — 仅用于界面与流程演示 · build <span id="buildVer">20261031-36</span><br>
+    模拟交易所 · Paper Exchange — 仅用于界面与流程演示 · build <span id="buildVer">20261031-37</span><br>
     不构成投资建议，不涉及真实资金、真实交易、真实收益
   </div>
 </div>
@@ -3636,7 +3636,8 @@ function exportFutStatsCsv(){
   rows.push(["合计", "", "", "", "", "", fmt(sumPnl, 4), fmt(sumFee, 4), fmt(sumPnl - sumFee, 4)]);
   const coinTag = fstatCoin === "all" ? "" : `_${fstatCoin}`;
   const sideTag = fstatSide === "all" ? "" : `_${fstatSide}`;
-  rows.push(["备注", fstatFilterLabel(), `导出时间=${new Date().toLocaleString()}`, "", "", "", "", "", ""]);
+  // 筛选条件备注放首行：打开文件第一眼看到导出口径，不用翻到表尾
+  rows.unshift(["备注", fstatFilterLabel(), `导出时间=${new Date().toLocaleString()}`, "", "", "", "", "", ""]);
   downloadCsv(rows, `futstats_detail_${fstatTime}${coinTag}${sideTag}_${new Date().toISOString().slice(0, 19).replace(/[:T]/g, "-")}.csv`);
   toast(`已导出 ${list.length} 条平仓记录 CSV`, "ok");
 }
@@ -3648,7 +3649,8 @@ function exportFutStatsAggCsv(){
   if(!closes.length){ toast("当前筛选下无平仓记录可汇总", "err"); return; }
   const rows = [["币种","方向","平仓笔数","胜","负","胜率(%)","已实现盈亏(USDT)","平仓手续费(USDT)","净盈亏(USDT)"]];
   let tPnl = 0, tFee = 0, tWin = 0;
-  for(const g of fstatAgg(closes)){
+  const groups = fstatAgg(closes);   // 提前算好组数，toast 计数不再依赖 rows.length（备注行入列后会算错）
+  for(const g of groups){
     const gNet = g.pnl - g.fee;
     rows.push([g.base, futSideLabel(g.side), g.n, g.win, g.n - g.win,
       fmt(g.win / g.n * 100, 1), fmt(g.pnl, 4), fmt(g.fee, 4), fmt(gNet, 4)]);
@@ -3658,9 +3660,10 @@ function exportFutStatsAggCsv(){
     fmt(tWin / closes.length * 100, 1), fmt(tPnl, 4), fmt(tFee, 4), fmt(tPnl - tFee, 4)]);
   const coinTag = fstatCoin === "all" ? "" : `_${fstatCoin}`;
   const sideTag = fstatSide === "all" ? "" : `_${fstatSide}`;
-  rows.push(["备注", fstatFilterLabel(), `导出时间=${new Date().toLocaleString()}`, "", "", "", "", "", ""]);
+  // 筛选条件备注放首行：打开文件第一眼看到导出口径，不用翻到表尾
+  rows.unshift(["备注", fstatFilterLabel(), `导出时间=${new Date().toLocaleString()}`, "", "", "", "", "", ""]);
   downloadCsv(rows, `futstats_agg_${fstatTime}${coinTag}${sideTag}_${new Date().toISOString().slice(0, 19).replace(/[:T]/g, "-")}.csv`);
-  toast(`已导出 ${rows.length - 2} 组汇总 CSV`, "ok");
+  toast(`已导出 ${groups.length} 组汇总 CSV`, "ok");
 }
 document.getElementById("btnExportFstatAgg").addEventListener("click", exportFutStatsAggCsv);
 
