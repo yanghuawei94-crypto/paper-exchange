@@ -498,6 +498,7 @@ tbody tr:hover{background:var(--panel2)}
           <button data-rtype="liq">强平</button>
           <button data-rtype="tp">止盈</button>
           <button data-rtype="sl">止损</button>
+          <button data-rtype="trail">追踪止损</button>
           <button data-rtype="funding">资金费</button>
           <span class="mid" id="riskCount" style="margin-left:auto;align-self:center;font-size:12px"></span>
         </div>
@@ -665,7 +666,7 @@ tbody tr:hover{background:var(--panel2)}
   </section>
 
   <div class="foot">
-    模拟交易所 · Paper Exchange — 仅用于界面与流程演示 · build <span id="buildVer">20261030-27</span><br>
+    模拟交易所 · Paper Exchange — 仅用于界面与流程演示 · build <span id="buildVer">20261030-28</span><br>
     不构成投资建议，不涉及真实资金、真实交易、真实收益
   </div>
 </div>
@@ -3011,7 +3012,7 @@ document.getElementById("btnExportCsv").addEventListener("click", exportOrdersCs
 /* ---------- 强平与资金费历史 ---------- */
 let riskType = "all";   // all / liq / tp / sl / funding
 let riskTime = "all";   // all / 1d / 7d / 30d（与订单页时间筛选同一语义）
-const RISK_TYPE_TEXT = { liq: "强平", tp: "止盈", sl: "止损", funding: "资金费" };
+const RISK_TYPE_TEXT = { liq: "强平", tp: "止盈", sl: "止损", trail: "追踪止损", funding: "资金费" };
 
 // 汇总风险事件：强平/止盈/止损来自合约平仓记录，资金费来自资金费流水；金额带符号（负=支出/亏损）
 function riskEvents(){
@@ -3180,7 +3181,7 @@ function renderFutures(){
     const u = futUpnl(pos);
     const cls = u > 0 ? "up" : u < 0 ? "down" : "mid";
     const isCross = pos.marginMode === "cross";
-    const tpsl = (pos.tp ? "TP " + fmtPx(pos.tp) : "—") + " / " + (pos.sl ? "SL " + fmtPx(pos.sl) : "—");
+    const tpsl = (pos.tp ? "TP " + fmtPx(pos.tp) : "—") + " / " + (pos.sl ? "SL " + fmtPx(pos.sl) : "—") + (pos.trailPct ? ` / 追踪${pos.trailPct}%@${fmtPx(pos.trailPeak || pos.entry)}` : "");
     // 强平预警：裕度 <10% 红色高亮，10%~20% 黄色提示，行内 ⚠ 标记 + 整行底色
     const buf = liqBuffer(pos);
     const warnLv = buf === null ? 0 : buf < 0.10 ? 2 : buf < 0.20 ? 1 : 0;
@@ -3222,7 +3223,7 @@ function renderFutures(){
 
   const hb = document.getElementById("futHistBody");
   const rows = state.futOrders.slice().reverse();
-  const reasonText = { tp: "止盈", sl: "止损", liq: "强平", limit: "限价", manual: "手动", pclose: "部分平仓", rev: "反手" };
+  const reasonText = { tp: "止盈", sl: "止损", liq: "强平", limit: "限价", manual: "手动", pclose: "部分平仓", rev: "反手", trail: "追踪" };
   hb.innerHTML = rows.length ? rows.map(o=>{
     const pnlCls = o.pnl > 0 ? "up" : o.pnl < 0 ? "down" : "mid";
     const kind = o.kind === "open" ? (o.reason === "limit" ? "开仓(限价)" : o.reason === "add" ? "加仓" : "开仓") : `平仓(${reasonText[o.reason || "manual"] || "手动"})`;
@@ -3633,21 +3634,28 @@ function setFutTpSl(id){
   if(tpRaw === null) return;
   const slRaw = prompt(`设置止损价（留空不设）— 当前标记价 ${fmtPx(priceOf(pos.base))}`, pos.sl ? String(pos.sl) : "");
   if(slRaw === null) return;
+  const trRaw = prompt(`设置追踪止损回撤幅度 %（留空不设，例如 2 表示从峰值回撤 2% 平仓）— 当前标记价 ${fmtPx(priceOf(pos.base))}`, pos.trailPct ? String(pos.trailPct) : "");
+  if(trRaw === null) return;
   const tp = tpRaw.trim() === "" ? undefined : parseFloat(tpRaw);
   const sl = slRaw.trim() === "" ? undefined : parseFloat(slRaw);
+  const trail = trRaw.trim() === "" ? undefined : parseFloat(trRaw);
   if(tp !== undefined && !(tp > 0)){ toast("止盈价无效", "err"); return; }
   if(sl !== undefined && !(sl > 0)){ toast("止损价无效", "err"); return; }
+  if(trail !== undefined && !(trail > 0 && trail <= 50)){ toast("追踪回撤幅度需在 0~50% 之间", "err"); return; }
   if(tp !== undefined) pos.tp = tp; else delete pos.tp;
   if(sl !== undefined) pos.sl = sl; else delete pos.sl;
+  // 设置追踪时以当前标记价为滚动起点；清空时连同峰值一起删除
+  if(trail !== undefined){ pos.trailPct = trail; pos.trailPeak = priceOf(pos.base); }
+  else { delete pos.trailPct; delete pos.trailPeak; }
   save();
   renderAll();
-  toast(`止盈止损已更新${pos.tp ? " TP " + fmtPx(pos.tp) : ""}${pos.sl ? " SL " + fmtPx(pos.sl) : ""}`, "ok");
+  toast(`止盈止损已更新${pos.tp ? " TP " + fmtPx(pos.tp) : ""}${pos.sl ? " SL " + fmtPx(pos.sl) : ""}${pos.trailPct ? " 追踪 " + pos.trailPct + "%" : ""}`, "ok");
 }
 
-// 自动触发止盈止损：标记价穿过 TP/SL 即平仓
+// 自动触发止盈止损：标记价穿过 TP/SL 即平仓；追踪止损随有利方向滚动峰值，回撤达设定幅度即平仓
 function checkFutTpSl(){
   if(!state.futures.length) return 0;
-  let n = 0;
+  let n = 0, ratcheted = false;
   for(const pos of [...state.futures]){
     const p = priceOf(pos.base);
     if(p <= 0) continue;
@@ -3660,8 +3668,21 @@ function checkFutTpSl(){
       const hit = pos.side === "long" ? p <= pos.sl : p >= pos.sl;
       if(hit) trigger = "sl";
     }
+    // 追踪止损：峰值只朝有利方向滚动（多为最高标记价、空为最低）；峰值变化即时落盘，防刷新后回撤起点丢失
+    if(!trigger && pos.trailPct){
+      if(pos.side === "long"){
+        const peak = Math.max(pos.trailPeak || pos.entry, p);
+        if(peak !== pos.trailPeak){ pos.trailPeak = peak; ratcheted = true; }
+        if(p <= peak * (1 - pos.trailPct / 100)) trigger = "trail";
+      }else{
+        const trough = Math.min(pos.trailPeak || pos.entry, p);
+        if(trough !== pos.trailPeak){ pos.trailPeak = trough; ratcheted = true; }
+        if(p >= trough * (1 + pos.trailPct / 100)) trigger = "trail";
+      }
+    }
     if(trigger){ closeFutures(pos.id, trigger); n++; }
   }
+  if(ratcheted) save();
   return n;
 }
 
@@ -3718,7 +3739,7 @@ function closeFutures(id, reason, forcedBack){
   if(state.futOrders.length > FUT_HIST_MAX) state.futOrders = state.futOrders.slice(-FUT_HIST_MAX);
   save();
   renderAll();
-  const reasonText = { tp: "止盈", sl: "止损", liq: "强平", manual: "平仓" }[reason || "manual"];
+  const reasonText = { tp: "止盈", sl: "止损", liq: "强平", trail: "追踪止损", manual: "平仓" }[reason || "manual"];
   toast(`${reasonText} ${pos.base} ${futSideLabel(pos.side)} · 返还 ${fmt(back, 2)} USDT · 盈亏 ${futFmtSign(s.pnl)}`, s.pnl >= 0 ? "ok" : "err");
 }
 
