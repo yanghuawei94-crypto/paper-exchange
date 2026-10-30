@@ -263,6 +263,7 @@ tbody tr:hover{background:var(--panel2)}
           <button data-ind="psy">PSY</button>
           <button data-ind="roc">ROC</button>
           <button data-ind="dma">DMA</button>
+          <button data-ind="sar">SAR</button>
         </div>
       </div>
       <div class="chart-box"><canvas id="klineCanvas"></canvas></div>
@@ -666,7 +667,7 @@ tbody tr:hover{background:var(--panel2)}
   </section>
 
   <div class="foot">
-    模拟交易所 · Paper Exchange — 仅用于界面与流程演示 · build <span id="buildVer">20261030-28</span><br>
+    模拟交易所 · Paper Exchange — 仅用于界面与流程演示 · build <span id="buildVer">20261030-29</span><br>
     不构成投资建议，不涉及真实资金、真实交易、真实收益
   </div>
 </div>
@@ -1042,6 +1043,7 @@ let kShowBIAS = false;
 let kShowPSY  = false;
 let kShowROC  = false;
 let kShowDMA  = false;
+let kShowSAR  = false;   // SAR 叠加在主图，不占子图
 let kInd = null;       // 全量指标缓存 {dif, dea, bar, r6, r12, r24, boll, kdj}，按 klines 绝对下标对齐
 let kReqSeq = 0;       // 请求序号：并发时只接受最后一次发起的结果
 
@@ -1377,6 +1379,44 @@ function dmaOf(kl, s = 10, l = 50, m = 10){
   return { dma, signal };
 }
 
+// SAR（抛物线转向，步长 0.02·上限 0.2）：主图叠加点；bull=true 点在 K 线下方（多头），反之上方（空头）
+// Wilder 原版：SAR = 前SAR + AF·(EP − 前SAR)，创新高/低 AF 累加；价格穿越 SAR 即反转，AF 归零重来
+function sarOf(kl, af0 = 0.02, afStep = 0.02, afMax = 0.2){
+  const len = kl.length;
+  const sar = new Array(len).fill(null);
+  const bull = new Array(len).fill(null);
+  if(len < 2) return { sar, bull };
+  let up = kl[1].c >= kl[0].c;           // 前两根定初始方向
+  let af = af0;
+  let ep = up ? kl[0].h : kl[0].l;       // EP = 本轮趋势极值点
+  let prevSar = up ? kl[0].l : kl[0].h;  // 初始 SAR 取首根对侧极值
+  sar[0] = prevSar; bull[0] = up;
+  for(let i = 1; i < len; i++){
+    let cur = prevSar + af * (ep - prevSar);
+    if(up){
+      // 多头 SAR 不得高于前两根最低价，防止穿进 K 线实体
+      cur = Math.min(cur, kl[i-1].l);
+      if(i >= 2) cur = Math.min(cur, kl[i-2].l);
+      if(kl[i].l < cur){                 // 最低价跌破 SAR → 反转空头
+        up = false; cur = ep; ep = kl[i].l; af = af0;
+      }else if(kl[i].h > ep){            // 创新高 → 加速因子累加
+        ep = kl[i].h; af = Math.min(af + afStep, afMax);
+      }
+    }else{
+      cur = Math.max(cur, kl[i-1].h);
+      if(i >= 2) cur = Math.max(cur, kl[i-2].h);
+      if(kl[i].h > cur){                 // 最高价上穿 SAR → 反转多头
+        up = true; cur = ep; ep = kl[i].h; af = af0;
+      }else if(kl[i].l < ep){
+        ep = kl[i].l; af = Math.min(af + afStep, afMax);
+      }
+    }
+    sar[i] = cur; bull[i] = up;
+    prevSar = cur;
+  }
+  return { sar, bull };
+}
+
 // 折线型子图通用绘制：自动量程 + 可选零轴/参考虚线 + 多条折线 + 面板标签
 // 新增的 TRIX/BIAS/PSY/ROC/DMA 都套这个，避免五段重复代码
 function drawLineSub(g, cfg){
@@ -1504,7 +1544,7 @@ function drawKline(){
   const allCloses = klines.map(k => k.c);
   kInd = null;
   if(kShowMACD || kShowRSI || kShowBOLL || kShowKDJ || kShowOBV || kShowWR || kShowDMI || kShowCCI || kShowATR || kShowMTM
-     || kShowTRIX || kShowBIAS || kShowPSY || kShowROC || kShowDMA){
+     || kShowTRIX || kShowBIAS || kShowPSY || kShowROC || kShowDMA || kShowSAR){
     kInd = {};
     if(kShowMACD) Object.assign(kInd, macdOf(allCloses));
     if(kShowRSI){ kInd.r6 = rsiOf(allCloses, 6); kInd.r12 = rsiOf(allCloses, 12); kInd.r24 = rsiOf(allCloses, 24); }
@@ -1521,6 +1561,7 @@ function drawKline(){
     if(kShowPSY)  kInd.psy  = psyOf(klines);
     if(kShowROC)  kInd.roc  = rocOf(klines);
     if(kShowDMA)  kInd.dma  = dmaOf(klines);
+    if(kShowSAR)  kInd.sar  = sarOf(klines);
   }
 
   let hi = -Infinity, lo = Infinity, vmax = 0;
@@ -1535,6 +1576,15 @@ function drawKline(){
       const idx = start + i;
       if(kInd.boll.up[idx] !== null && kInd.boll.up[idx] > hi) hi = kInd.boll.up[idx];
       if(kInd.boll.dn[idx] !== null && kInd.boll.dn[idx] < lo) lo = kInd.boll.dn[idx];
+    }
+  }
+  // SAR 反转初期点位可能远离现价（取前一轮极值），同样纳入价格范围防止飞出画布
+  if(kShowSAR && kInd && kInd.sar){
+    for(let i = 0; i < vis.length; i++){
+      const v = kInd.sar.sar[start + i];
+      if(v === null) continue;
+      if(v > hi) hi = v;
+      if(v < lo) lo = v;
     }
   }
   if(!isFinite(hi) || !isFinite(lo) || hi === lo) hi = lo + 1;
@@ -1623,6 +1673,24 @@ function drawKline(){
     g.font = "10px ui-monospace,Menlo,monospace";
     g.fillStyle = "#848e9c"; g.textAlign = "left"; g.textBaseline = "middle";
     g.fillText("BOLL 20·2", padL + 4, priceTop + 9);
+  }
+
+  // SAR 叠加主图：多头绿点在 K 线下方托着走，空头红点压在上方；点位即趋势止损参考价
+  if(kShowSAR && kInd && kInd.sar){
+    const r = Math.max(1, Math.min(2, slot * 0.12));
+    vis.forEach((_, i) => {
+      const idx = start + i;
+      const v = kInd.sar.sar[idx];
+      if(v === null) return;
+      g.fillStyle = kInd.sar.bull[idx] ? "#0ecb81" : "#f6465d";
+      g.beginPath();
+      g.arc(padL + slot * (i + 0.5), yOf(v), r, 0, Math.PI * 2);
+      g.fill();
+    });
+    g.font = "10px ui-monospace,Menlo,monospace";
+    g.fillStyle = "#848e9c"; g.textAlign = "left"; g.textBaseline = "middle";
+    // BOLL 也开着时标签下移一行，避免两个面板名叠在一起
+    g.fillText("SAR 0.02·0.2", padL + 4, priceTop + (kShowBOLL && kInd && kInd.boll ? 21 : 9));
   }
 
   // 子图分隔线 + 面板名
@@ -2106,6 +2174,9 @@ function drawHover(idx, my){
     const dv = kInd.dma.dma[idx];
     rows.push(["DMA", fmt(dv, 2), dv >= 0 ? "#0ecb81" : "#f6465d"]);
     if(kInd.dma.signal[idx] !== null) rows.push(["DMA均", fmt(kInd.dma.signal[idx], 2), "#c084fc"]);
+  }
+  if(kInd && kInd.sar && kInd.sar.sar[idx] !== null){
+    rows.push(["SAR", fmtPx(kInd.sar.sar[idx]), kInd.sar.bull[idx] ? "#0ecb81" : "#f6465d"]);
   }
   const bw = 152, bh = rows.length * 17 + 16;
   let bx = x + 14;
@@ -4261,6 +4332,7 @@ document.getElementById("indBtns").addEventListener("click", e=>{
   else if(ind === "psy")  kShowPSY  = !kShowPSY;
   else if(ind === "roc")  kShowROC  = !kShowROC;
   else if(ind === "dma")  kShowDMA  = !kShowDMA;
+  else if(ind === "sar")  kShowSAR  = !kShowSAR;
   else return;
   b.classList.toggle("on");
   drawKline();
