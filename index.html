@@ -481,6 +481,18 @@ tbody tr:hover{background:var(--panel2)}
           <thead><tr><th>时间</th><th>币种</th><th>方向</th><th>类型</th><th>价格</th><th>数量</th><th>盈亏</th><th>手续费</th></tr></thead>
           <tbody id="futHistBody"></tbody>
         </table>
+        <!-- 盈亏分析：基于合约记录中的平仓单，按币种×方向聚合已实现盈亏与胜率 -->
+        <h3 style="margin-top:20px">盈亏分析 <span class="mid" style="font-weight:400;font-size:11px">已实现 · 分币种/方向 · 基于最近 50 条合约记录中的平仓单</span></h3>
+        <div class="grid g4" style="margin:10px 0">
+          <div class="card"><h3>已实现盈亏</h3><div class="kpi sm" id="fstatPnl">—</div><div class="sub">平仓单盈亏合计（未扣费）</div></div>
+          <div class="card"><h3>平仓手续费</h3><div class="kpi sm" id="fstatFee">—</div><div class="sub">平仓端手续费合计</div></div>
+          <div class="card"><h3>净盈亏</h3><div class="kpi sm" id="fstatNet">—</div><div class="sub">已实现盈亏 − 手续费</div></div>
+          <div class="card"><h3>胜率</h3><div class="kpi sm" id="fstatWin">—</div><div class="sub" id="fstatWinSub">盈利笔数 / 总平仓笔数</div></div>
+        </div>
+        <table>
+          <thead><tr><th>币种</th><th>方向</th><th>平仓笔数</th><th>胜 / 负</th><th>胜率</th><th>已实现盈亏</th><th>手续费</th><th>净盈亏</th></tr></thead>
+          <tbody id="fstatBody"></tbody>
+        </table>
         <h3 style="margin-top:20px">资金费记录 <span class="mid" style="font-weight:400;font-size:11px">每 8 小时 · 多付空收 · 最近 30 条</span></h3>
         <div class="sub" style="margin-bottom:8px">
           累计已付 <span class="down" id="fundPaid">0.00</span> USDT · 累计已收 <span class="up" id="fundRecv">0.00</span> USDT
@@ -667,7 +679,7 @@ tbody tr:hover{background:var(--panel2)}
   </section>
 
   <div class="foot">
-    模拟交易所 · Paper Exchange — 仅用于界面与流程演示 · build <span id="buildVer">20261030-29</span><br>
+    模拟交易所 · Paper Exchange — 仅用于界面与流程演示 · build <span id="buildVer">20261030-30</span><br>
     不构成投资建议，不涉及真实资金、真实交易、真实收益
   </div>
 </div>
@@ -3348,6 +3360,62 @@ function renderFutures(){
   renderFuturesPreview();
   checkLiqWarnings();   // 强平预警：进入危险区toast一次，恢复后重置
   renderRiskEvents();   // 强平与资金费历史面板
+  renderFutStats();     // 盈亏分析面板
+}
+
+/* ---------- 合约盈亏分析 ---------- */
+// 平仓单聚合：pnl 为已实现盈亏（未扣平仓手续费），fee 为平仓手续费；胜 = pnl > 0
+function renderFutStats(){
+  const closes = state.futOrders.filter(o => o.kind === "close");
+  const pnlEl = document.getElementById("fstatPnl");
+  if(!pnlEl) return;
+  // 按 币种×方向 聚合（key 用 base|side，输出按合计净盈亏绝对值降序）
+  const groups = {};
+  for(const o of closes){
+    const key = o.base + "|" + o.side;
+    if(!groups[key]) groups[key] = { base: o.base, side: o.side, n: 0, win: 0, pnl: 0, fee: 0 };
+    const g = groups[key];
+    g.n++;
+    if(o.pnl > 0) g.win++;
+    g.pnl += o.pnl;
+    g.fee += o.fee;
+  }
+  const rows = Object.values(groups).sort((a, b) => Math.abs(b.pnl - b.fee) - Math.abs(a.pnl - a.fee));
+  // 顶部 KPI：合计
+  const tPnl = closes.reduce((s, o) => s + o.pnl, 0);
+  const tFee = closes.reduce((s, o) => s + o.fee, 0);
+  const tWin = closes.filter(o => o.pnl > 0).length;
+  pnlEl.textContent = closes.length ? futFmtSign(tPnl) : "—";
+  pnlEl.className = "kpi sm " + (tPnl > 0 ? "up" : tPnl < 0 ? "down" : "mid");
+  const feeEl = document.getElementById("fstatFee");
+  feeEl.textContent = closes.length ? fmt(tFee, 2) : "—";
+  feeEl.className = "kpi sm";
+  const net = tPnl - tFee;
+  const netEl = document.getElementById("fstatNet");
+  netEl.textContent = closes.length ? futFmtSign(net) : "—";
+  netEl.className = "kpi sm " + (net > 0 ? "up" : net < 0 ? "down" : "mid");
+  const winEl = document.getElementById("fstatWin");
+  winEl.textContent = closes.length ? fmt(tWin / closes.length * 100, 1) + "%" : "—";
+  winEl.className = "kpi sm " + (closes.length ? (tWin / closes.length >= 0.5 ? "up" : "down") : "mid");
+  document.getElementById("fstatWinSub").textContent = closes.length
+    ? `${tWin} 胜 / ${closes.length - tWin} 负 · 共 ${closes.length} 笔`
+    : "盈利笔数 / 总平仓笔数";
+  // 明细表
+  const el = document.getElementById("fstatBody");
+  el.innerHTML = rows.length ? rows.map(g => {
+    const gNet = g.pnl - g.fee;
+    const wr = g.win / g.n * 100;
+    return `<tr>
+      <td><b>${g.base}</b></td>
+      <td class="${g.side === "long" ? "up" : "down"}">${futSideLabel(g.side)}</td>
+      <td>${g.n}</td>
+      <td><span class="up">${g.win}</span> / <span class="down">${g.n - g.win}</span></td>
+      <td class="${wr >= 50 ? "up" : "down"}">${fmt(wr, 1)}%</td>
+      <td class="${g.pnl > 0 ? "up" : g.pnl < 0 ? "down" : "mid"}">${futFmtSign(g.pnl)}</td>
+      <td class="mid">${fmt(g.fee, 2)}</td>
+      <td class="${gNet > 0 ? "up" : gNet < 0 ? "down" : "mid"}">${futFmtSign(gNet)}</td>
+    </tr>`;
+  }).join("") : `<tr><td colspan="8" class="empty" style="text-align:center">暂无平仓记录，平仓一笔合约后这里会生成统计</td></tr>`;
 }
 
 /* ---------- 总渲染 ---------- */
