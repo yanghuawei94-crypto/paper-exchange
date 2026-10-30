@@ -481,8 +481,17 @@ tbody tr:hover{background:var(--panel2)}
           <thead><tr><th>时间</th><th>币种</th><th>方向</th><th>类型</th><th>价格</th><th>数量</th><th>盈亏</th><th>手续费</th></tr></thead>
           <tbody id="futHistBody"></tbody>
         </table>
-        <!-- 盈亏分析：基于合约记录中的平仓单，按币种×方向聚合已实现盈亏与胜率 -->
-        <h3 style="margin-top:20px">盈亏分析 <span class="mid" style="font-weight:400;font-size:11px">已实现 · 分币种/方向 · 基于最近 50 条合约记录中的平仓单</span></h3>
+        <!-- 盈亏分析：基于合约记录中的平仓单，按币种×方向聚合已实现盈亏与胜率；时间筛选只影响本面板 -->
+        <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;margin:20px 0 10px">
+          <h3 style="margin:0">盈亏分析 <span class="mid" style="font-weight:400;font-size:11px">已实现 · 分币种/方向 · 基于最近 50 条合约记录中的平仓单</span></h3>
+          <span class="mid" id="fstatCount" style="font-size:12px"></span>
+        </div>
+        <div class="tf" style="margin-bottom:10px" id="fstatTimeFilter">
+          <button data-ftime="all" class="on">全部时间</button>
+          <button data-ftime="1d">今天</button>
+          <button data-ftime="7d">近 7 天</button>
+          <button data-ftime="30d">近 30 天</button>
+        </div>
         <div class="grid g4" style="margin:10px 0">
           <div class="card"><h3>已实现盈亏</h3><div class="kpi sm" id="fstatPnl">—</div><div class="sub">平仓单盈亏合计（未扣费）</div></div>
           <div class="card"><h3>平仓手续费</h3><div class="kpi sm" id="fstatFee">—</div><div class="sub">平仓端手续费合计</div></div>
@@ -679,7 +688,7 @@ tbody tr:hover{background:var(--panel2)}
   </section>
 
   <div class="foot">
-    模拟交易所 · Paper Exchange — 仅用于界面与流程演示 · build <span id="buildVer">20261030-30</span><br>
+    模拟交易所 · Paper Exchange — 仅用于界面与流程演示 · build <span id="buildVer">20261030-31</span><br>
     不构成投资建议，不涉及真实资金、真实交易、真实收益
   </div>
 </div>
@@ -3364,9 +3373,33 @@ function renderFutures(){
 }
 
 /* ---------- 合约盈亏分析 ---------- */
+let fstatTime = "all";   // all / 1d / 7d / 30d，与风险面板时间筛选同一语义（今天 = 当天 0 点起）
+
+// 按时间筛选平仓单（渲染与计数共用）
+function fstatCloses(){
+  const all = state.futOrders.filter(o => o.kind === "close");
+  if(fstatTime === "all") return all;
+  const days = { "1d": 1, "7d": 7, "30d": 30 }[fstatTime] || 0;
+  if(!days) return all;
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  const since = today.getTime() - (days - 1) * 86400000;
+  return all.filter(o => orderTs(o.t) >= since);
+}
+
+// 时间筛选切换
+document.getElementById("fstatTimeFilter").addEventListener("click", e => {
+  const b = e.target.closest("button");
+  if(!b || !b.dataset.ftime) return;
+  fstatTime = b.dataset.ftime;
+  document.querySelectorAll("#fstatTimeFilter [data-ftime]").forEach(x => x.classList.toggle("on", x === b));
+  renderFutStats();
+});
+
 // 平仓单聚合：pnl 为已实现盈亏（未扣平仓手续费），fee 为平仓手续费；胜 = pnl > 0
 function renderFutStats(){
-  const closes = state.futOrders.filter(o => o.kind === "close");
+  const closes = fstatCloses();
+  const allClosed = state.futOrders.filter(o => o.kind === "close");
   const pnlEl = document.getElementById("fstatPnl");
   if(!pnlEl) return;
   // 按 币种×方向 聚合（key 用 base|side，输出按合计净盈亏绝对值降序）
@@ -3400,6 +3433,9 @@ function renderFutStats(){
   document.getElementById("fstatWinSub").textContent = closes.length
     ? `${tWin} 胜 / ${closes.length - tWin} 负 · 共 ${closes.length} 笔`
     : "盈利笔数 / 总平仓笔数";
+  // 条数统计：当前筛选 / 全部平仓单
+  const cntEl = document.getElementById("fstatCount");
+  if(cntEl) cntEl.textContent = allClosed.length ? `${closes.length} / ${allClosed.length} 笔` : "";
   // 明细表
   const el = document.getElementById("fstatBody");
   el.innerHTML = rows.length ? rows.map(g => {
@@ -3415,7 +3451,9 @@ function renderFutStats(){
       <td class="mid">${fmt(g.fee, 2)}</td>
       <td class="${gNet > 0 ? "up" : gNet < 0 ? "down" : "mid"}">${futFmtSign(gNet)}</td>
     </tr>`;
-  }).join("") : `<tr><td colspan="8" class="empty" style="text-align:center">暂无平仓记录，平仓一笔合约后这里会生成统计</td></tr>`;
+  }).join("") : `<tr><td colspan="8" class="empty" style="text-align:center">${allClosed.length
+    ? "当前时间筛选下无平仓记录，切换时间范围或选「全部时间」"
+    : "暂无平仓记录，平仓一笔合约后这里会生成统计"}</td></tr>`;
 }
 
 /* ---------- 总渲染 ---------- */
