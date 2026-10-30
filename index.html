@@ -512,6 +512,11 @@ tbody tr:hover{background:var(--panel2)}
           <thead><tr><th>币种</th><th>方向</th><th>平仓笔数</th><th>胜 / 负</th><th>胜率</th><th>已实现盈亏</th><th>手续费</th><th>净盈亏</th></tr></thead>
           <tbody id="fstatBody"></tbody>
         </table>
+        <!-- 累计净盈亏走势：按时间正序累加每笔平仓净盈亏（已扣平仓手续费） -->
+        <h3 style="margin-top:16px">累计净盈亏走势 <span class="mid" style="font-weight:400;font-size:11px">按平仓时间正序累加净盈亏，受上方时间/币种/方向筛选影响</span></h3>
+        <div style="height:150px;margin:8px 0">
+          <canvas id="fstatPnlChart" style="width:100%;height:100%"></canvas>
+        </div>
         <h3 style="margin-top:20px">资金费记录 <span class="mid" style="font-weight:400;font-size:11px">每 8 小时 · 多付空收 · 最近 30 条</span></h3>
         <div class="sub" style="margin-bottom:8px">
           累计已付 <span class="down" id="fundPaid">0.00</span> USDT · 累计已收 <span class="up" id="fundRecv">0.00</span> USDT
@@ -698,7 +703,7 @@ tbody tr:hover{background:var(--panel2)}
   </section>
 
   <div class="foot">
-    模拟交易所 · Paper Exchange — 仅用于界面与流程演示 · build <span id="buildVer">20261030-35</span><br>
+    模拟交易所 · Paper Exchange — 仅用于界面与流程演示 · build <span id="buildVer">20261031-36</span><br>
     不构成投资建议，不涉及真实资金、真实交易、真实收益
   </div>
 </div>
@@ -3486,6 +3491,73 @@ function fstatAgg(closes){
   return Object.values(groups).sort((a, b) => Math.abs(b.pnl - b.fee) - Math.abs(a.pnl - a.fee));
 }
 
+// 当前筛选条件的中文描述，用于 CSV 备注行与图表标题
+function fstatFilterLabel(){
+  const tLabel = { all: "全部时间", "1d": "今天", "7d": "近 7 天", "30d": "近 30 天" }[fstatTime] || fstatTime;
+  const cLabel = fstatCoin === "all" ? "全部币种" : fstatCoin;
+  const sLabel = fstatSide === "all" ? "全部方向" : (fstatSide === "long" ? "多" : "空");
+  return `时间=${tLabel}  币种=${cLabel}  方向=${sLabel}`;
+}
+
+// 累计净盈亏走势图：每笔平仓净盈亏按时间正序累加，首点为 0
+function drawFstatPnlChart(closes){
+  const cv = document.getElementById("fstatPnlChart");
+  if(!cv) return;
+  const box = cv.parentElement;
+  const W = box.clientWidth, H = box.clientHeight;
+  if(W <= 0 || H <= 0) return;
+  const dpr = window.devicePixelRatio || 1;
+  cv.width = Math.round(W * dpr); cv.height = Math.round(H * dpr);
+  const g = cv.getContext("2d");
+  g.setTransform(dpr, 0, 0, dpr, 0, 0);
+  g.clearRect(0, 0, W, H);
+
+  if(closes.length === 0){
+    g.fillStyle = "#848e9c"; g.font = "12px sans-serif"; g.textAlign = "center";
+    g.fillText("当前筛选下无平仓记录", W / 2, H / 2);
+    return;
+  }
+  const sorted = closes.slice().sort((a, b) => orderTs(a.t) - orderTs(b.t));
+  const pts = [0];
+  let acc = 0;
+  for(const o of sorted){ acc += o.pnl - o.fee; pts.push(acc); }
+
+  let lo = Math.min(...pts, 0), hi = Math.max(...pts, 0);
+  if(hi - lo < 1e-9){ hi += 1; lo -= 1; }
+  const padL = 8, padR = 60, padT = 10, padB = 18;
+  const cw = W - padL - padR, ch = H - padT - padB;
+  const x = i => padL + cw * i / (pts.length - 1);
+  const y = v => padT + ch * (1 - (v - lo) / (hi - lo));
+
+  // 网格 + 右侧刻度
+  g.strokeStyle = "rgba(43,49,57,.8)"; g.fillStyle = "#848e9c"; g.font = "10px sans-serif"; g.textAlign = "left";
+  for(let i = 0; i <= 3; i++){
+    const v = lo + (hi - lo) * i / 3, yy = y(v);
+    g.beginPath(); g.moveTo(padL, yy); g.lineTo(W - padR, yy); g.stroke();
+    g.fillText(fmt(v, 0), W - padR + 6, yy + 3);
+  }
+  // 零轴虚线
+  const zy = y(0);
+  g.save(); g.setLineDash([3, 3]); g.strokeStyle = "#848e9c";
+  g.beginPath(); g.moveTo(padL, zy); g.lineTo(W - padR, zy); g.stroke(); g.restore();
+
+  const last = pts[pts.length - 1];
+  const line = last >= 0 ? "#0ecb81" : "#f6465d";
+  const grad = g.createLinearGradient(0, padT, 0, padT + ch);
+  grad.addColorStop(0, last >= 0 ? "rgba(14,203,129,.22)" : "rgba(246,70,93,.22)");
+  grad.addColorStop(1, "rgba(0,0,0,0)");
+  g.beginPath();
+  pts.forEach((v, i) => i ? g.lineTo(x(i), y(v)) : g.moveTo(x(0), y(v)));
+  g.strokeStyle = line; g.lineWidth = 1.6; g.stroke();
+  g.lineTo(x(pts.length - 1), padT + ch); g.lineTo(x(0), padT + ch); g.closePath();
+  g.fillStyle = grad; g.fill();
+  // 最新点
+  const lx = x(pts.length - 1), ly = y(last);
+  g.beginPath(); g.arc(lx, ly, 3, 0, 7); g.fillStyle = line; g.fill();
+  g.fillStyle = line; g.textAlign = "right"; g.font = "11px sans-serif";
+  g.fillText(fmt(last, 2), lx - 4, ly - 4);
+}
+
 // 平仓单聚合：pnl 为已实现盈亏（未扣平仓手续费），fee 为平仓手续费；胜 = pnl > 0
 function renderFutStats(){
   const pnlEl = document.getElementById("fstatPnl");
@@ -3541,6 +3613,7 @@ function renderFutStats(){
   }).join("") : `<tr><td colspan="8" class="empty" style="text-align:center">${allClosed.length
     ? "当前筛选下无平仓记录，换时间范围/币种或选「全部」"
     : "暂无平仓记录，平仓一笔合约后这里会生成统计"}</td></tr>`;
+  drawFstatPnlChart(closes);
 }
 
 // 导出盈亏分析 CSV：当前时间筛选下的逐笔平仓明细（非聚合），便于外部复核
@@ -3563,6 +3636,7 @@ function exportFutStatsCsv(){
   rows.push(["合计", "", "", "", "", "", fmt(sumPnl, 4), fmt(sumFee, 4), fmt(sumPnl - sumFee, 4)]);
   const coinTag = fstatCoin === "all" ? "" : `_${fstatCoin}`;
   const sideTag = fstatSide === "all" ? "" : `_${fstatSide}`;
+  rows.push(["备注", fstatFilterLabel(), `导出时间=${new Date().toLocaleString()}`, "", "", "", "", "", ""]);
   downloadCsv(rows, `futstats_detail_${fstatTime}${coinTag}${sideTag}_${new Date().toISOString().slice(0, 19).replace(/[:T]/g, "-")}.csv`);
   toast(`已导出 ${list.length} 条平仓记录 CSV`, "ok");
 }
@@ -3584,6 +3658,7 @@ function exportFutStatsAggCsv(){
     fmt(tWin / closes.length * 100, 1), fmt(tPnl, 4), fmt(tFee, 4), fmt(tPnl - tFee, 4)]);
   const coinTag = fstatCoin === "all" ? "" : `_${fstatCoin}`;
   const sideTag = fstatSide === "all" ? "" : `_${fstatSide}`;
+  rows.push(["备注", fstatFilterLabel(), `导出时间=${new Date().toLocaleString()}`, "", "", "", "", "", ""]);
   downloadCsv(rows, `futstats_agg_${fstatTime}${coinTag}${sideTag}_${new Date().toISOString().slice(0, 19).replace(/[:T]/g, "-")}.csv`);
   toast(`已导出 ${rows.length - 2} 组汇总 CSV`, "ok");
 }
