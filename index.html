@@ -698,7 +698,7 @@ tbody tr:hover{background:var(--panel2)}
   </section>
 
   <div class="foot">
-    模拟交易所 · Paper Exchange — 仅用于界面与流程演示 · build <span id="buildVer">20261030-34</span><br>
+    模拟交易所 · Paper Exchange — 仅用于界面与流程演示 · build <span id="buildVer">20261030-35</span><br>
     不构成投资建议，不涉及真实资金、真实交易、真实收益
   </div>
 </div>
@@ -3386,6 +3386,22 @@ function renderFutures(){
 let fstatTime = "all";   // all / 1d / 7d / 30d，与风险面板时间筛选同一语义（今天 = 当天 0 点起）
 let fstatCoin = "all";   // all 或具体币种，与时间筛选叠加生效
 let fstatSide = "all";   // all / long / short，与时间、币种筛选叠加生效
+const FSTAT_KEY = "paper_exchange_fstat_v1";   // 筛选状态独立存档键，刷新/重开页面后保持
+
+// 筛选状态持久化（只记偏好，不影响交易数据）
+function saveFstatFilter(){
+  try{ localStorage.setItem(FSTAT_KEY, JSON.stringify({ time: fstatTime, coin: fstatCoin, side: fstatSide })); }catch(e){}
+}
+function loadFstatFilter(){
+  try{
+    const o = JSON.parse(localStorage.getItem(FSTAT_KEY) || "null");
+    if(!o) return;
+    if(["all","1d","7d","30d"].includes(o.time)) fstatTime = o.time;
+    if(["all","long","short"].includes(o.side)) fstatSide = o.side;
+    if(typeof o.coin === "string" && o.coin) fstatCoin = o.coin;
+  }catch(e){}
+}
+loadFstatFilter();
 
 // 按时间筛选平仓单（渲染与计数共用）
 function fstatCloses(){
@@ -3407,6 +3423,7 @@ document.getElementById("fstatTimeFilter").addEventListener("click", e => {
   if(!b || !b.dataset.ftime) return;
   fstatTime = b.dataset.ftime;
   document.querySelectorAll("#fstatTimeFilter [data-ftime]").forEach(x => x.classList.toggle("on", x === b));
+  saveFstatFilter();
   renderFutStats();
 });
 
@@ -3415,6 +3432,7 @@ document.getElementById("fstatCoinFilter").addEventListener("click", e => {
   const b = e.target.closest("button");
   if(!b || !b.dataset.fcoin) return;
   fstatCoin = b.dataset.fcoin;
+  saveFstatFilter();
   renderFutStats();
 });
 
@@ -3424,6 +3442,18 @@ document.getElementById("fstatSideFilter").addEventListener("click", e => {
   if(!b || !b.dataset.fside) return;
   fstatSide = b.dataset.fside;
   document.querySelectorAll("#fstatSideFilter [data-fside]").forEach(x => x.classList.toggle("on", x === b));
+  saveFstatFilter();
+  renderFutStats();
+});
+
+// 点击汇总行 = 快捷筛选该「币种×方向」；再次点击已选中的同一行则取消
+document.getElementById("fstatBody").addEventListener("click", e => {
+  const tr = e.target.closest("tr");
+  if(!tr || !tr.dataset.fbase) return;
+  const same = fstatCoin === tr.dataset.fbase && fstatSide === tr.dataset.fside;
+  fstatCoin = same ? "all" : tr.dataset.fbase;
+  fstatSide = same ? "all" : tr.dataset.fside;
+  saveFstatFilter();
   renderFutStats();
 });
 
@@ -3461,6 +3491,9 @@ function renderFutStats(){
   const pnlEl = document.getElementById("fstatPnl");
   if(!pnlEl) return;
   renderFstatCoinFilter();
+  // 按钮选中态统一由状态驱动（支持刷新恢复与多标签页同步）
+  document.querySelectorAll("#fstatTimeFilter [data-ftime]").forEach(b => b.classList.toggle("on", b.dataset.ftime === fstatTime));
+  document.querySelectorAll("#fstatSideFilter [data-fside]").forEach(b => b.classList.toggle("on", b.dataset.fside === fstatSide));
   const closes = fstatCloses();
   const allClosed = state.futOrders.filter(o => o.kind === "close");
   const rows = fstatAgg(closes);
@@ -3495,7 +3528,7 @@ function renderFutStats(){
   el.innerHTML = rows.length ? rows.map(g => {
     const gNet = g.pnl - g.fee;
     const wr = g.win / g.n * 100;
-    return `<tr>
+    return `<tr data-fbase="${g.base}" data-fside="${g.side}" style="cursor:pointer" title="点击按 ${g.base} ${futSideLabel(g.side)} 筛选，再点一次取消">
       <td><b>${g.base}</b></td>
       <td class="${g.side === "long" ? "up" : "down"}">${futSideLabel(g.side)}</td>
       <td>${g.n}</td>
@@ -4687,6 +4720,7 @@ document.getElementById("btnAddFunds").addEventListener("click", ()=>{
 // 跨标签页同步：别的标签写入存档时，本页立即拉取最新状态，避免旧数据互相覆盖
 window.addEventListener("storage", e=>{
   if(e.key === STORE_KEY || e.key === DEP_KEY){ load(); renderAll(); }
+  else if(e.key === FSTAT_KEY){ loadFstatFilter(); renderFutStats(); }   // 另一标签页改了盈亏筛选
 });
 
 document.getElementById("btnReset").addEventListener("click", ()=>{
