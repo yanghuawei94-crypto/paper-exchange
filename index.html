@@ -517,6 +517,13 @@ tbody tr:hover{background:var(--panel2)}
         <div style="height:150px;margin:8px 0">
           <canvas id="fstatPnlChart" style="width:100%;height:100%"></canvas>
         </div>
+        <!-- 风险与行为指标：最大回撤走净盈亏口径（与上方走势图一致）；连胜连败/盈亏比走已实现口径（与胜率一致） -->
+        <div class="grid g4" style="margin:10px 0">
+          <div class="card"><h3>最大回撤</h3><div class="kpi sm" id="fstatMdd">—</div><div class="sub">累计净盈亏峰谷差</div></div>
+          <div class="card"><h3>最长连胜 / 连败</h3><div class="kpi sm" id="fstatStreak">—</div><div class="sub">按平仓时间顺序统计</div></div>
+          <div class="card"><h3>盈亏比</h3><div class="kpi sm" id="fstatPf">—</div><div class="sub">平均盈利 ÷ 平均亏损</div></div>
+          <div class="card"><h3>平均盈 / 亏</h3><div class="kpi sm" id="fstatAvg">—</div><div class="sub">单笔已实现盈亏均值（未扣费）</div></div>
+        </div>
         <h3 style="margin-top:20px">资金费记录 <span class="mid" style="font-weight:400;font-size:11px">每 8 小时 · 多付空收 · 最近 30 条</span></h3>
         <div class="sub" style="margin-bottom:8px">
           累计已付 <span class="down" id="fundPaid">0.00</span> USDT · 累计已收 <span class="up" id="fundRecv">0.00</span> USDT
@@ -703,7 +710,7 @@ tbody tr:hover{background:var(--panel2)}
   </section>
 
   <div class="foot">
-    模拟交易所 · Paper Exchange — 仅用于界面与流程演示 · build <span id="buildVer">20261031-37</span><br>
+    模拟交易所 · Paper Exchange — 仅用于界面与流程演示 · build <span id="buildVer">20261031-38</span><br>
     不构成投资建议，不涉及真实资金、真实交易、真实收益
   </div>
 </div>
@@ -3614,6 +3621,46 @@ function renderFutStats(){
     ? "当前筛选下无平仓记录，换时间范围/币种或选「全部」"
     : "暂无平仓记录，平仓一笔合约后这里会生成统计"}</td></tr>`;
   drawFstatPnlChart(closes);
+  renderFstatRisk(closes);
+}
+
+// 风险与行为指标：最大回撤基于累计净盈亏曲线（与走势图同口径）；连胜连败/盈亏比/平均盈亏基于已实现盈亏（与胜率同口径，pnl > 0 为胜）
+function fstatRiskMetrics(closes){
+  const list = closes.slice().sort((a, b) => orderTs(a.t) - orderTs(b.t));   // 时间正序
+  let peak = 0, cum = 0, mdd = 0;                 // 最大回撤：累计净盈亏峰谷差
+  let maxW = 0, maxL = 0, curW = 0, curL = 0;     // 最长连胜/连败
+  let winSum = 0, winN = 0, lossSum = 0, lossN = 0;
+  for(const o of list){
+    cum += o.pnl - o.fee;
+    if(cum > peak) peak = cum;
+    if(peak - cum > mdd) mdd = peak - cum;
+    if(o.pnl > 0){ curW++; curL = 0; winSum += o.pnl; winN++; }
+    else{ curL++; curW = 0; lossSum += o.pnl; lossN++; }
+    if(curW > maxW) maxW = curW;
+    if(curL > maxL) maxL = curL;
+  }
+  const avgWin = winN ? winSum / winN : 0;
+  const avgLoss = lossN ? lossSum / lossN : 0;    // 负数
+  return { mdd, maxW, maxL, avgWin, avgLoss,
+    pf: avgLoss ? avgWin / Math.abs(avgLoss) : (winN ? Infinity : 0) };
+}
+
+function renderFstatRisk(closes){
+  const mddEl = document.getElementById("fstatMdd");
+  if(!mddEl) return;
+  const els = { mdd: mddEl, st: document.getElementById("fstatStreak"),
+    pf: document.getElementById("fstatPf"), avg: document.getElementById("fstatAvg") };
+  if(!closes.length){
+    for(const k of ["mdd","st","pf","avg"]){ els[k].textContent = "—"; els[k].className = "kpi sm"; }
+    return;
+  }
+  const m = fstatRiskMetrics(closes);
+  els.mdd.textContent = m.mdd > 0 ? `-${fmt(m.mdd, 2)}` : "0.00";
+  els.mdd.className = "kpi sm " + (m.mdd > 0 ? "down" : "");
+  els.st.innerHTML = `<span class="up">${m.maxW}</span> / <span class="down">${m.maxL}</span>`;
+  els.pf.textContent = m.pf === Infinity ? "∞" : fmt(m.pf, 2);
+  els.pf.className = "kpi sm " + (m.pf === Infinity || m.pf >= 1 ? "up" : "down");
+  els.avg.innerHTML = `<span class="up">+${fmt(m.avgWin, 2)}</span> / <span class="down">${fmt(m.avgLoss, 2)}</span>`;
 }
 
 // 导出盈亏分析 CSV：当前时间筛选下的逐笔平仓明细（非聚合），便于外部复核
