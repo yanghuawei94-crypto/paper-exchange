@@ -617,7 +617,10 @@ tbody tr:hover{background:var(--panel2)}
           <button data-fund="10000">10,000</button>
         </span>
         <button class="trade-btn" id="btnAddFunds">模拟充值</button>
+        <button class="trade-btn" id="btnBackup">备份数据</button>
+        <button class="trade-btn" id="btnRestore">恢复备份</button>
         <button class="trade-btn" id="btnReset" style="border-color:var(--red);color:var(--red)">重置全部数据</button>
+        <input type="file" id="restoreFile" accept=".json,application/json" style="display:none">
       </div>
     </div>
   </section>
@@ -710,7 +713,7 @@ tbody tr:hover{background:var(--panel2)}
   </section>
 
   <div class="foot">
-    模拟交易所 · Paper Exchange — 仅用于界面与流程演示 · build <span id="buildVer">20261031-38</span><br>
+    模拟交易所 · Paper Exchange — 仅用于界面与流程演示 · build <span id="buildVer">20261031-39</span><br>
     不构成投资建议，不涉及真实资金、真实交易、真实收益
   </div>
 </div>
@@ -4855,6 +4858,61 @@ document.getElementById("btnReset").addEventListener("click", ()=>{
   load();
   renderAll();
   toast("已重置", "ok");
+});
+
+/* ---------- 数据备份 / 恢复 ---------- */
+// 备份：三个 localStorage 键原样打包成 JSON 文件下载（主存档 / 净投入 / 盈亏筛选偏好）
+document.getElementById("btnBackup").addEventListener("click", ()=>{
+  const data = {};
+  for(const k of [STORE_KEY, DEP_KEY, FSTAT_KEY]){
+    const v = localStorage.getItem(k);
+    if(v !== null) data[k] = v;
+  }
+  if(!(STORE_KEY in data)){ toast("当前没有可备份的数据", "err"); return; }
+  const payload = {
+    app: "paper-exchange", version: 1,
+    build: document.getElementById("buildVer").textContent,
+    exportedAt: new Date().toISOString(),
+    data
+  };
+  const blob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = `paper-exchange-backup_${new Date().toISOString().slice(0, 19).replace(/[:T]/g, "-")}.json`;
+  document.body.appendChild(a); a.click(); a.remove();
+  URL.revokeObjectURL(url);
+  toast("备份文件已导出", "ok");
+});
+
+// 恢复：校验备份结构 → 确认覆盖 → 原样写回各键（缺失的键移除，忠实还原备份时点状态）→ 重新加载渲染
+document.getElementById("btnRestore").addEventListener("click", ()=> document.getElementById("restoreFile").click());
+document.getElementById("restoreFile").addEventListener("change", function(){
+  const file = this.files && this.files[0];
+  this.value = "";   // 清空选择，允许再次选同一文件
+  if(!file) return;
+  const reader = new FileReader();
+  reader.onload = ()=>{
+    try{
+      const obj = JSON.parse(reader.result);
+      if(obj.app !== "paper-exchange" || !obj.data || typeof obj.data[STORE_KEY] !== "string"){
+        throw new Error("不是本站的备份文件");
+      }
+      JSON.parse(obj.data[STORE_KEY]);   // 主存档必须是合法 JSON
+      if(!confirm(`恢复备份（导出于 ${obj.exportedAt || "未知时间"}）将覆盖当前全部数据，确定继续？`)) return;
+      for(const k of [STORE_KEY, DEP_KEY, FSTAT_KEY]){
+        if(typeof obj.data[k] === "string") localStorage.setItem(k, obj.data[k]);
+        else localStorage.removeItem(k);
+      }
+      load();               // 同页重读存档（storage 事件只跨标签页触发）
+      loadFstatFilter();
+      renderAll();
+      toast("备份已恢复", "ok");
+    }catch(err){
+      toast("恢复失败：" + err.message, "err");
+    }
+  };
+  reader.readAsText(file);
 });
 
 /* ---------- 启动 ---------- */
