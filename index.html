@@ -197,6 +197,10 @@ tbody tr:hover{background:var(--panel2)}
 .cal-future{opacity:0}   /* 未来日期占位，保持网格对齐 */
 @media(max-width:760px){ .cal-cell{height:12px} }
 
+/* 按时段胜率分布：胜率列 mini 进度条，宽度=胜率，颜色按是否过半 */
+.wr{display:inline-block;vertical-align:middle;width:44px;height:5px;background:var(--panel);border:1px solid var(--border);border-radius:3px;overflow:hidden;margin-right:6px}
+.wr i{display:block;height:100%;border-radius:3px}
+
 /* 账户风险日限额警示条：黄 = 亏到限额 60%（接近）、红 = 达到限额 */
 #riskLimitBanner{border-radius:var(--r);padding:10px 12px;margin:0 0 10px;font-size:12.5px;line-height:1.8}
 #riskLimitBanner.warn{border:1px solid var(--yellow);background:rgba(240,185,11,.08)}
@@ -550,6 +554,23 @@ tbody tr:hover{background:var(--panel2)}
         <!-- 每日盈亏日历：按天聚合净盈亏（已扣平仓手续费），与走势图同数据集，受三维筛选影响 -->
         <h3 style="margin-top:16px">每日盈亏日历 <span class="mid" style="font-weight:400;font-size:11px">最近 16 周 · 按天聚合净盈亏 · 颜色越深幅度越大 · 悬停看明细</span></h3>
         <div id="fstatCalendar"></div>
+        <!-- 按时段胜率分布：按平仓小时/星期分组，胜率口径 pnl>0、净盈亏口径 pnl-fee，受三维筛选影响 -->
+        <div class="grid g2" style="margin-top:16px">
+          <div class="card">
+            <h3>按小时分布 <span class="mid" style="font-weight:400;font-size:11px">平仓时刻 0-23 点 · 本地时间</span></h3>
+            <table>
+              <thead><tr><th>小时</th><th>笔数</th><th>胜 / 负</th><th>胜率</th><th>净盈亏</th></tr></thead>
+              <tbody id="fstatHourBody"></tbody>
+            </table>
+          </div>
+          <div class="card">
+            <h3>按星期分布 <span class="mid" style="font-weight:400;font-size:11px">周一 ~ 周日</span></h3>
+            <table>
+              <thead><tr><th>星期</th><th>笔数</th><th>胜 / 负</th><th>胜率</th><th>净盈亏</th></tr></thead>
+              <tbody id="fstatWeekBody"></tbody>
+            </table>
+          </div>
+        </div>
         <h3 style="margin-top:20px">资金费记录 <span class="mid" style="font-weight:400;font-size:11px">每 8 小时 · 多付空收 · 最近 30 条</span></h3>
         <div class="sub" style="margin-bottom:8px">
           累计已付 <span class="down" id="fundPaid">0.00</span> USDT · 累计已收 <span class="up" id="fundRecv">0.00</span> USDT
@@ -739,7 +760,7 @@ tbody tr:hover{background:var(--panel2)}
   </section>
 
   <div class="foot">
-    模拟交易所 · Paper Exchange — 仅用于界面与流程演示 · build <span id="buildVer">20261031-41</span><br>
+    模拟交易所 · Paper Exchange — 仅用于界面与流程演示 · build <span id="buildVer">20261031-42</span><br>
     不构成投资建议，不涉及真实资金、真实交易、真实收益
   </div>
 </div>
@@ -3652,6 +3673,7 @@ function renderFutStats(){
   drawFstatPnlChart(closes);
   renderFstatRisk(closes);
   renderFstatCalendar(closes);
+  renderFstatHourly(closes);
   renderRiskLimit();
 }
 
@@ -3728,6 +3750,45 @@ function renderFstatCalendar(closes){
     html += `<i class="cal-cell" style="background:${color}" title="${mmdd} 净盈亏 ${v > 0 ? "+" : ""}${fmt(v, 2)}"></i>`;
   }
   el.innerHTML = html;
+}
+
+/* ---------- 按时段胜率分布（build 42） ---------- */
+// 按平仓时间分组统计：胜率口径 pnl>0（与胜率 KPI 一致），净盈亏口径 pnl-fee（与走势图一致），受三维筛选影响
+function fstatBucketRows(closes, keyFn, labelFn){
+  const map = {};
+  for(const o of closes){
+    const k = keyFn(new Date(orderTs(o.t)));
+    if(!(k in map)) map[k] = { n: 0, win: 0, net: 0 };
+    const b = map[k];
+    b.n++;
+    if(o.pnl > 0) b.win++;
+    b.net += o.pnl - o.fee;
+  }
+  // 只列出有平仓记录的时段，按 key 数值升序（小时 0-23 / 星期 1-7）
+  return Object.keys(map).sort((a, b) => a - b).map(k => {
+    const b = map[k], wr = b.win / b.n * 100;
+    const color = wr >= 50 ? "var(--green)" : "var(--red)";
+    return `<tr>
+      <td>${labelFn(k)}</td>
+      <td>${b.n}</td>
+      <td><span class="up">${b.win}</span> / <span class="down">${b.n - b.win}</span></td>
+      <td><span class="wr"><i style="width:${Math.round(wr)}%;background:${color}"></i></span><span class="${wr >= 50 ? "up" : "down"}">${fmt(wr, 1)}%</span></td>
+      <td class="${b.net > 0 ? "up" : b.net < 0 ? "down" : "mid"}">${futFmtSign(b.net)}</td>
+    </tr>`;
+  }).join("");
+}
+
+function renderFstatHourly(closes){
+  const hourEl = document.getElementById("fstatHourBody");
+  const weekEl = document.getElementById("fstatWeekBody");
+  if(!hourEl || !weekEl) return;
+  const emptyRow = `<tr><td colspan="5" class="empty" style="text-align:center">${state.futOrders.some(o => o.kind === "close")
+    ? "当前筛选范围内无平仓记录" : "暂无平仓记录，平仓一笔合约后这里会生成统计"}</td></tr>`;
+  const WEEK = ["周一", "周二", "周三", "周四", "周五", "周六", "周日"];
+  hourEl.innerHTML = closes.length
+    ? fstatBucketRows(closes, d => d.getHours(), h => `${String(h).padStart(2, "0")}:00`) : emptyRow;
+  weekEl.innerHTML = closes.length
+    ? fstatBucketRows(closes, d => (d.getDay() + 6) % 7, i => WEEK[i]) : emptyRow;   // 周一=0
 }
 
 /* ---------- 账户风险日限额（build 41） ---------- */
