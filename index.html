@@ -121,6 +121,9 @@ tbody tr:hover{background:var(--panel2)}
 .tf button.on{background:var(--yellow);color:#0b0e11;border-color:var(--yellow);font-weight:600}
 /* 指标按钮已到 10 个，窄屏允许换行，避免横向溢出被裁掉 */
 #indBtns{flex-wrap:wrap}
+/* 画线工具栏：窄屏允许换行，不挤占 K 线高度 */
+.draw-bar{display:flex;align-items:center;gap:8px;margin-bottom:8px;flex-wrap:wrap}
+.draw-bar .tf button.on{background:var(--yellow);color:#0b0e11;border-color:var(--yellow);font-weight:600}
 .chart-box{position:relative;height:320px}
 .chart-box canvas{display:block;width:100%;height:100%;cursor:grab}
 @media(max-width:760px){ .chart-box{height:230px} }
@@ -325,6 +328,16 @@ tbody tr:hover{background:var(--panel2)}
           <button data-ind="emv">EMV</button>
           <button data-ind="cr">CR</button>
         </div>
+      </div>
+      <div class="draw-bar">
+        <span class="mid" style="font-size:11px">画线</span>
+        <div class="tf" id="drawBtns">
+          <button data-draw="hline">水平线</button>
+          <button data-draw="trend">趋势线</button>
+          <button data-draw="erase">橡皮擦</button>
+          <button data-draw="clear">清空</button>
+        </div>
+        <span class="mid" style="font-size:11px">点击画线 · 靠近线可拖动 · 按币种和周期分别保存</span>
       </div>
       <div class="chart-box"><canvas id="klineCanvas"></canvas></div>
     </div>
@@ -802,7 +815,7 @@ tbody tr:hover{background:var(--panel2)}
   </section>
 
   <div class="foot">
-    模拟交易所 · Paper Exchange — 仅用于界面与流程演示 · build <span id="buildVer">20261031-45</span><br>
+    模拟交易所 · Paper Exchange — 仅用于界面与流程演示 · build <span id="buildVer">20261031-46</span><br>
     不构成投资建议，不涉及真实资金、真实交易、真实收益
   </div>
 </div>
@@ -1190,6 +1203,7 @@ let kReqSeq = 0;       // 请求序号：并发时只接受最后一次发起的
 
 async function fetchKlines(resetView){
   const seq = ++kReqSeq;
+  drawPending = null; drawPreview = null; drawDrag = null;   // 换币种/周期时丢弃未完成的画线点
   if(resetView){ kZoom = 120; kOffset = 0; }   // 换币种/周期时回到最新画面
   const pair = activePair + "USDT";
   const url = "https://data-api.binance.vision/api/v3/klines?symbol=" + pair
@@ -1662,6 +1676,164 @@ function drawLineSub(g, cfg){
 // 可视窗口：kZoom 表示画多少根，kOffset 表示距最新一根往历史方向偏移多少根
 let kZoom = 120, kOffset = 0;
 let kDrag = null;      // 拖拽状态
+
+/* ---------- 画线工具（build 46） ---------- */
+// 画线按「币种 + 周期」分组存储，锚定时间戳与价格，缩放/平移后位置不漂移
+const DRAW_KEY = "paper_exchange_drawings_v1";
+let drawings = {};        // { "BTCUSDT|1m": [ {id,type:"hline",price} | {id,type:"trend",t1,p1,t2,p2} ] }
+let drawMode = null;      // null / "hline" / "trend" / "erase"
+let drawPending = null;   // 趋势线第一个点 {t,p}
+let drawPreview = null;   // 趋势线鼠标预览点 {t,p}
+let drawDrag = null;      // 拖动已有线 {id, part:"line"/"p1"/"p2", lastT, lastP}
+let drawSeq = 0;
+
+function loadDrawings(){
+  try{
+    const o = JSON.parse(localStorage.getItem(DRAW_KEY) || "null");
+    drawings = {};
+    if(!o || typeof o !== "object") return;
+    for(const key of Object.keys(o)){
+      const arr = o[key];
+      if(!Array.isArray(arr)) continue;
+      drawings[key] = arr.filter(d => d && typeof d.id === "string" &&
+        ((d.type === "hline" && isFinite(d.price) && d.price > 0) ||
+         (d.type === "trend" && isFinite(d.t1) && isFinite(d.p1) && isFinite(d.t2) && isFinite(d.p2)))).slice(0, 200);
+    }
+  }catch(e){ drawings = {}; }
+}
+function saveDrawings(){
+  try{ localStorage.setItem(DRAW_KEY, JSON.stringify(drawings)); }catch(e){}
+}
+function curDrawKey(){ return activePair + "USDT|" + klineTf; }
+function curDrawings(){ return drawings[curDrawKey()] || []; }
+loadDrawings();
+
+// 时间 ↔ 画布 x：按周期步长换算成小数下标，超出窗口的部分交给 clip 裁掉
+function drawXOfTime(L, t){
+  const ms = TF_MS[klineTf] || 60000;
+  return L.padL + L.slot * ((t - klines[0].t) / ms - L.start + 0.5);
+}
+function drawTimeOfX(L, x){
+  const ms = TF_MS[klineTf] || 60000;
+  return klines[0].t + (L.start + (x - L.padL) / L.slot - 0.5) * ms;
+}
+function drawYOfPrice(L, p){
+  return L.priceBottom - (p - L.lo) / (L.hi - L.lo) * (L.priceBottom - L.priceTop);
+}
+function drawPriceOfY(L, y){
+  const cy = Math.max(L.priceTop, Math.min(L.priceBottom, y));
+  return L.hi - (cy - L.priceTop) / (L.priceBottom - L.priceTop) * (L.hi - L.lo);
+}
+function segDist(px, py, x1, y1, x2, y2){
+  const dx = x2 - x1, dy = y2 - y1;
+  const len2 = dx*dx + dy*dy;
+  let t = len2 === 0 ? 0 : ((px - x1)*dx + (py - y1)*dy) / len2;
+  t = Math.max(0, Math.min(1, t));
+  return Math.hypot(px - (x1 + t*dx), py - (y1 + t*dy));
+}
+
+// 命中测试：返回最近的线与命中部位（端点优先，便于拖动趋势线两端）
+function drawingHit(x, y){
+  const L = kLayout;
+  if(!L || x < L.padL || x > L.padL + L.cw || y < L.priceTop || y > L.priceBottom) return null;
+  let best = null, bestD = 7;
+  for(const d of curDrawings()){
+    if(d.type === "hline"){
+      const dy = Math.abs(y - drawYOfPrice(L, d.price));
+      if(dy < bestD){ bestD = dy; best = { id: d.id, part: "line" }; }
+    }else{
+      const x1 = drawXOfTime(L, d.t1), y1 = drawYOfPrice(L, d.p1);
+      const x2 = drawXOfTime(L, d.t2), y2 = drawYOfPrice(L, d.p2);
+      const e1 = Math.hypot(x - x1, y - y1), e2 = Math.hypot(x - x2, y - y2);
+      const de = Math.min(e1, e2);
+      if(de < 8 && de < bestD){ bestD = de; best = { id: d.id, part: e1 <= e2 ? "p1" : "p2" }; }
+      const dd = segDist(x, y, x1, y1, x2, y2);
+      if(dd < bestD){ bestD = dd; best = { id: d.id, part: "line" }; }
+    }
+  }
+  return best;
+}
+
+function addHline(price){
+  const key = curDrawKey();
+  const list = drawings[key] || (drawings[key] = []);
+  if(list.length >= 200){ toast("当前周期画线上限 200 条", "err"); return; }
+  list.push({ id: "d" + Date.now() + "-" + (++drawSeq), type: "hline", price });
+  saveDrawings(); drawKline();
+  toast("已添加水平线 " + fmtPx(price), "ok");
+}
+
+function removeDrawingById(id){
+  const list = drawings[curDrawKey()];
+  if(!list) return;
+  const i = list.findIndex(d => d.id === id);
+  if(i >= 0){ list.splice(i, 1); saveDrawings(); drawKline(); }
+}
+
+// 画线渲染：只允许画在价格面板内，超出部分裁掉
+function drawDrawings(g, L){
+  const list = curDrawings();
+  if(!list.length && !(drawPending && drawPreview)) return;
+  g.save();
+  g.beginPath(); g.rect(L.padL, L.priceTop, L.cw, L.priceBottom - L.priceTop); g.clip();
+  g.font = "10px ui-monospace,Menlo,monospace";
+  g.textAlign = "left"; g.textBaseline = "bottom";
+  for(const d of list){
+    if(d.type === "hline"){
+      const y = drawYOfPrice(L, d.price);
+      g.strokeStyle = "rgba(240,185,11,.85)"; g.lineWidth = 1.2;
+      g.beginPath(); g.moveTo(L.padL, y); g.lineTo(L.padL + L.cw, y); g.stroke();
+      g.fillStyle = "rgba(240,185,11,.85)";
+      g.fillText(fmtPx(d.price), L.padL + 4, y - 2);
+    }else{
+      const x1 = drawXOfTime(L, d.t1), y1 = drawYOfPrice(L, d.p1);
+      const x2 = drawXOfTime(L, d.t2), y2 = drawYOfPrice(L, d.p2);
+      g.strokeStyle = "rgba(91,138,240,.9)"; g.lineWidth = 1.2;
+      g.beginPath(); g.moveTo(x1, y1); g.lineTo(x2, y2); g.stroke();
+      g.fillStyle = "rgba(91,138,240,.95)";
+      g.beginPath(); g.arc(x1, y1, 2.5, 0, Math.PI * 2); g.fill();
+      g.beginPath(); g.arc(x2, y2, 2.5, 0, Math.PI * 2); g.fill();
+    }
+  }
+  // 趋势线第一点已落、鼠标还没点第二点：画虚线预览
+  if(drawPending && drawPreview){
+    const x1 = drawXOfTime(L, drawPending.t), y1 = drawYOfPrice(L, drawPending.p);
+    const x2 = drawXOfTime(L, drawPreview.t), y2 = drawYOfPrice(L, drawPreview.p);
+    g.strokeStyle = "rgba(132,142,156,.9)"; g.lineWidth = 1.2;
+    g.setLineDash([4, 3]);
+    g.beginPath(); g.moveTo(x1, y1); g.lineTo(x2, y2); g.stroke();
+    g.setLineDash([]);
+  }
+  g.restore();
+}
+
+// 画线模式下的一次点击（鼠标与触屏共用）：水平线直接落线，趋势线点两次
+function drawTapAt(x, y){
+  if(!kLayout) return;
+  if(drawMode === "erase"){
+    const hit = drawingHit(x, y);
+    if(hit){ removeDrawingById(hit.id); toast("已删除画线", "ok"); }
+    else toast("附近没有画线", "err");
+    return;
+  }
+  if(drawMode === "hline"){
+    addHline(drawPriceOfY(kLayout, y));
+    return;
+  }
+  if(drawMode === "trend"){
+    const pt = { t: drawTimeOfX(kLayout, x), p: drawPriceOfY(kLayout, y) };
+    if(!drawPending){ drawPending = pt; drawPreview = null; drawKline(); return; }
+    const key = curDrawKey();
+    const list = drawings[key] || (drawings[key] = []);
+    if(list.length >= 200){ toast("当前周期画线上限 200 条", "err"); return; }
+    list.push({ id: "d" + Date.now() + "-" + (++drawSeq), type: "trend",
+                t1: drawPending.t, p1: drawPending.p, t2: pt.t, p2: pt.p });
+    drawPending = null; drawPreview = null;
+    saveDrawings(); drawKline();
+    toast("已添加趋势线", "ok");
+  }
+}
+
 
 function kVisible(){
   const end = Math.max(kZoom, klines.length - kOffset);
@@ -2288,13 +2460,15 @@ function drawKline(){
     g.setLineDash([]);
   }
 
+  // 画线工具：叠加在底图最上层，随缩放/平移按时间锚定
+  drawDrawings(g, { padL, cw, slot, start, priceTop, priceBottom, hi, lo });
+
   // 缓存底图与布局，供十字光标叠加时复用（避免每次移动都重算坐标）
   kBase = document.createElement("canvas");
   kBase.width = cv.width; kBase.height = cv.height;
   kBase.getContext("2d").drawImage(cv, 0, 0);
   kLayout = { W, H, padL, padR, padT, padB, cw, slot, priceTop, priceBottom, hi, lo, start, count: vis.length,
               chartBottom: chartBottomY };
-
   // 每 15 秒刷新数据后会重画底图；若鼠标仍停在图上，重绘十字光标，避免闪烁消失
   if(kMouse && kHover >= 0 && kHover >= start && kHover < start + vis.length){
     const keep = kHover;
@@ -2493,6 +2667,12 @@ function drawHover(idx, my){
     const rect = cv.getBoundingClientRect();
     const x = e.clientX - rect.left;
     const y = e.clientY - rect.top;
+    // 趋势线已点第一点：鼠标移动时更新虚线预览
+    if(drawPending){
+      drawPreview = { t: drawTimeOfX(kLayout, x), p: drawPriceOfY(kLayout, y) };
+      drawKline();
+      return;
+    }
     // 光标映射到当前可视窗口内的下标
     const idx = kLayout.start + Math.max(0, Math.min(kLayout.count - 1,
       Math.floor((x - kLayout.padL) / kLayout.slot)));
@@ -2549,6 +2729,7 @@ function drawHover(idx, my){
       const rect = cv.getBoundingClientRect();
       const x = e.changedTouches[0].clientX - rect.left;
       const y = e.changedTouches[0].clientY - rect.top;
+      if(drawMode){ drawTapAt(x, y); kTouch = null; return; }   // 触屏同样可画线/删除
       const idx = kLayout.start + Math.max(0, Math.min(kLayout.count - 1,
         Math.floor((x - kLayout.padL) / kLayout.slot)));
       kHover = idx; kMouse = { y };
@@ -2572,6 +2753,20 @@ function drawHover(idx, my){
   // 拖拽平移：向右拖看历史，向左拖回到最新
   cv.addEventListener("mousedown", e => {
     if(!kLayout) return;
+    const rect = cv.getBoundingClientRect();
+    const x = e.clientX - rect.left, y = e.clientY - rect.top;
+    // 画线模式：点击添加/删除，不触发平移
+    if(drawMode){
+      drawTapAt(x, y);
+      return;
+    }
+    // 非画线模式：靠近已有画线时拖动这条线，否则照常平移
+    const hit = drawingHit(x, y);
+    if(hit){
+      drawDrag = { id: hit.id, part: hit.part };
+      kHover = -1; drawKline();
+      return;
+    }
     kDrag = { x: e.clientX, off: kOffset };
     cv.style.cursor = "grabbing";
   });
@@ -2579,16 +2774,49 @@ function drawHover(idx, my){
 
 // 拖拽在窗口范围内结束，避免鼠标移出画布后卡住
 window.addEventListener("mousemove", e => {
+  // 拖动画线：水平线只改价格；趋势线拖端点改对应点，拖线身整体平移
+  if(drawDrag && kLayout){
+    const cv = document.getElementById("klineCanvas");
+    const rect = cv.getBoundingClientRect();
+    const x = e.clientX - rect.left, y = e.clientY - rect.top;
+    const d = curDrawings().find(q => q.id === drawDrag.id);
+    if(d){
+      if(d.type === "hline" || drawDrag.part === "line"){
+        if(d.type === "hline"){
+          d.price = Math.max(1e-8, drawPriceOfY(kLayout, y));
+        }else{
+          const t = drawTimeOfX(kLayout, x), p = drawPriceOfY(kLayout, y);
+          if(drawDrag.lastT !== undefined){
+            d.t1 += t - drawDrag.lastT; d.t2 += t - drawDrag.lastT;
+            d.p1 += p - drawDrag.lastP; d.p2 += p - drawDrag.lastP;
+          }
+          drawDrag.lastT = t; drawDrag.lastP = p;
+        }
+      }else if(drawDrag.part === "p1"){
+        d.t1 = drawTimeOfX(kLayout, x); d.p1 = drawPriceOfY(kLayout, y);
+      }else if(drawDrag.part === "p2"){
+        d.t2 = drawTimeOfX(kLayout, x); d.p2 = drawPriceOfY(kLayout, y);
+      }
+      drawKline();
+    }
+    return;
+  }
   if(!kDrag || !kLayout) return;
   const steps = Math.round((e.clientX - kDrag.x) / kLayout.slot);
   kOffset = Math.max(0, Math.min(Math.max(0, klines.length - kZoom), kDrag.off + steps));
   drawKline();
 });
 window.addEventListener("mouseup", () => {
+  if(drawDrag){
+    drawDrag = null;
+    saveDrawings();        // 拖动结束才落盘，避免拖动中频繁写 localStorage
+    drawKline();
+    return;
+  }
   if(!kDrag) return;
   kDrag = null;
   const cv = document.getElementById("klineCanvas");
-  if(cv) cv.style.cursor = "grab";
+  if(cv) cv.style.cursor = drawMode ? "crosshair" : "grab";
   drawKline();
 });
 
@@ -5091,6 +5319,29 @@ document.getElementById("indBtns").addEventListener("click", e=>{
   drawKline();
 });
 
+// 画线工具：水平线 / 趋势线 / 橡皮擦 / 清空（按当前币种+周期生效）
+document.getElementById("drawBtns").addEventListener("click", e => {
+  const b = e.target.closest("button[data-draw]");
+  if(!b) return;
+  const act = b.dataset.draw;
+  if(act === "clear"){
+    if(!curDrawings().length){ toast("当前币种/周期没有画线", "err"); return; }
+    if(!confirm("清空当前币种/周期的全部画线？")) return;
+    drawings[curDrawKey()] = [];
+    saveDrawings(); drawKline();
+    toast("已清空画线", "ok");
+    return;
+  }
+  drawMode = drawMode === act ? null : act;
+  drawPending = null; drawPreview = null; drawDrag = null;
+  document.querySelectorAll("#drawBtns button[data-draw]").forEach(x =>
+    x.classList.toggle("on", x.dataset.draw === drawMode));
+  const cv = document.getElementById("klineCanvas");
+  if(cv) cv.style.cursor = drawMode ? "crosshair" : "grab";
+  if(drawMode === "erase") toast("点击要删除的画线", "ok");
+  drawKline();
+});
+
 // 窗口尺寸变化时重绘（节流）
 window.addEventListener("resize", ()=>{
   clearTimeout(window._klineTimer);
@@ -5237,22 +5488,25 @@ window.addEventListener("storage", e=>{
   else if(e.key === FSTAT_KEY){ loadFstatFilter(); renderFutStats(); }   // 另一标签页改了盈亏筛选
   else if(e.key === RISKCFG_KEY){ loadRiskCfg(); renderRiskLimit(); }    // 另一标签页改了风险限额
   else if(e.key === ALERTS_KEY){ loadAlerts(); renderPriceAlerts(); }    // 另一标签页改了价格警报
+  else if(e.key === DRAW_KEY){ loadDrawings(); drawKline(); }            // 另一标签页改了画线
 });
 
 document.getElementById("btnReset").addEventListener("click", ()=>{
   if(!confirm("重置全部数据？持仓、成交、理财、会员都会被清空，USDT 回到 10,000。")) return;
   localStorage.removeItem(STORE_KEY);
   localStorage.removeItem(DEP_KEY);
+  localStorage.removeItem(DRAW_KEY);   // 画线属于用户自定义数据，一并清空
   load();
+  loadDrawings();
   renderAll();
   toast("已重置", "ok");
 });
 
 /* ---------- 数据备份 / 恢复 ---------- */
-// 备份：全部 localStorage 键原样打包成 JSON 文件下载（主存档 / 净投入 / 盈亏筛选偏好 / 风险限额设置 / 价格警报）
+// 备份：全部 localStorage 键原样打包成 JSON 文件下载（主存档 / 净投入 / 盈亏筛选偏好 / 风险限额设置 / 价格警报 / K 线画线）
 document.getElementById("btnBackup").addEventListener("click", ()=>{
   const data = {};
-  for(const k of [STORE_KEY, DEP_KEY, FSTAT_KEY, RISKCFG_KEY, ALERTS_KEY]){
+  for(const k of [STORE_KEY, DEP_KEY, FSTAT_KEY, RISKCFG_KEY, ALERTS_KEY, DRAW_KEY]){
     const v = localStorage.getItem(k);
     if(v !== null) data[k] = v;
   }
@@ -5288,7 +5542,7 @@ document.getElementById("restoreFile").addEventListener("change", function(){
       }
       JSON.parse(obj.data[STORE_KEY]);   // 主存档必须是合法 JSON
       if(!confirm(`恢复备份（导出于 ${obj.exportedAt || "未知时间"}）将覆盖当前全部数据，确定继续？`)) return;
-      for(const k of [STORE_KEY, DEP_KEY, FSTAT_KEY, RISKCFG_KEY, ALERTS_KEY]){
+      for(const k of [STORE_KEY, DEP_KEY, FSTAT_KEY, RISKCFG_KEY, ALERTS_KEY, DRAW_KEY]){
         if(typeof obj.data[k] === "string") localStorage.setItem(k, obj.data[k]);
         else localStorage.removeItem(k);
       }
@@ -5296,6 +5550,7 @@ document.getElementById("restoreFile").addEventListener("change", function(){
       loadFstatFilter();
       loadRiskCfg();
       loadAlerts();
+      loadDrawings();
       renderAll();
       toast("备份已恢复", "ok");
     }catch(err){
