@@ -626,6 +626,28 @@ tbody tr:hover{background:var(--panel2)}
             </table>
           </div>
         </div>
+        <!-- 月度汇总 / 币种胜率排行：同一数据集（受三维筛选影响），月度按自然月聚合，排行按币种聚合 -->
+        <div class="grid g2" style="margin-top:16px">
+          <div class="card">
+            <h3>月度净盈亏 <span class="mid" style="font-weight:400;font-size:11px">按平仓月份 · 净盈亏已扣手续费</span></h3>
+            <table>
+              <thead><tr><th>月份</th><th>笔数</th><th>胜 / 负</th><th>胜率</th><th>净盈亏</th></tr></thead>
+              <tbody id="fstatMonthBody"></tbody>
+            </table>
+          </div>
+          <div class="card">
+            <h3>币种胜率排行 <span class="mid" style="font-weight:400;font-size:11px">按胜率降序 · 同胜率看净盈亏</span></h3>
+            <table>
+              <thead><tr><th>#</th><th>币种</th><th>笔数</th><th>胜率</th><th>净盈亏</th></tr></thead>
+              <tbody id="fstatCoinRankBody"></tbody>
+            </table>
+          </div>
+        </div>
+        <!-- 单笔净盈亏分布：每笔平仓按净盈亏（pnl−fee）对称分桶，直观看出盈亏分布形态 -->
+        <h3 style="margin-top:16px">单笔净盈亏分布 <span class="mid" style="font-weight:400;font-size:11px">每笔平仓净盈亏（已扣手续费）· 对称分桶 · 受三维筛选影响</span></h3>
+        <div style="height:150px;margin:8px 0">
+          <canvas id="fstatHistChart" style="width:100%;height:100%"></canvas>
+        </div>
         <h3 style="margin-top:20px">资金费记录 <span class="mid" style="font-weight:400;font-size:11px">每 8 小时 · 多付空收 · 最近 30 条</span></h3>
         <div class="sub" style="margin-bottom:8px">
           累计已付 <span class="down" id="fundPaid">0.00</span> USDT · 累计已收 <span class="up" id="fundRecv">0.00</span> USDT
@@ -815,7 +837,7 @@ tbody tr:hover{background:var(--panel2)}
   </section>
 
   <div class="foot">
-    模拟交易所 · Paper Exchange — 仅用于界面与流程演示 · build <span id="buildVer">20261031-46</span><br>
+    模拟交易所 · Paper Exchange — 仅用于界面与流程演示 · build <span id="buildVer">20261031-47</span><br>
     不构成投资建议，不涉及真实资金、真实交易、真实收益
   </div>
 </div>
@@ -4095,6 +4117,9 @@ function renderFutStats(){
   renderFstatRisk(closes);
   renderFstatCalendar(closes);
   renderFstatHourly(closes);
+  renderFstatMonthly(closes);       // build 47：月度净盈亏汇总
+  renderFstatCoinRank(closes);      // build 47：币种胜率排行
+  drawFstatHistogram(closes);       // build 47：单笔净盈亏分布直方图
   renderRiskLimit();
 }
 
@@ -4210,6 +4235,110 @@ function renderFstatHourly(closes){
     ? fstatBucketRows(closes, d => d.getHours(), h => `${String(h).padStart(2, "0")}:00`) : emptyRow;
   weekEl.innerHTML = closes.length
     ? fstatBucketRows(closes, d => (d.getDay() + 6) % 7, i => WEEK[i]) : emptyRow;   // 周一=0
+}
+
+/* ---------- 月度汇总 / 币种胜率排行 / 单笔分布（build 47） ---------- */
+// 月度汇总：按平仓自然月聚合笔数/胜负/净盈亏，最新月份在前；受三维筛选影响
+function renderFstatMonthly(closes){
+  const el = document.getElementById("fstatMonthBody");
+  if(!el) return;
+  const emptyRow = `<tr><td colspan="5" class="empty" style="text-align:center">${state.futOrders.some(o => o.kind === "close")
+    ? "当前筛选范围内无平仓记录" : "暂无平仓记录，平仓一笔合约后这里会生成月度汇总"}</td></tr>`;
+  if(!closes.length){ el.innerHTML = emptyRow; return; }
+  const map = {};
+  for(const o of closes){
+    const d = new Date(orderTs(o.t));
+    const key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
+    const m = map[key] || (map[key] = { n: 0, win: 0, net: 0 });
+    m.n++;
+    if(o.pnl > 0) m.win++;
+    m.net += o.pnl - o.fee;
+  }
+  const rows = Object.entries(map).sort((a, b) => b[0].localeCompare(a[0]));   // 月份倒序
+  el.innerHTML = rows.map(([month, m]) => {
+    const wr = m.win / m.n * 100;
+    return `<tr>
+      <td><b>${month}</b></td>
+      <td>${m.n}</td>
+      <td><span class="up">${m.win}</span> / <span class="down">${m.n - m.win}</span></td>
+      <td class="${wr >= 50 ? "up" : "down"}">${fmt(wr, 1)}%</td>
+      <td class="${m.net > 0 ? "up" : m.net < 0 ? "down" : "mid"}">${futFmtSign(m.net)}</td>
+    </tr>`;
+  }).join("");
+}
+
+// 币种胜率排行：按币种聚合（方向筛选已生效），胜率降序，同胜率看净盈亏，再比笔数
+function renderFstatCoinRank(closes){
+  const el = document.getElementById("fstatCoinRankBody");
+  if(!el) return;
+  const emptyRow = `<tr><td colspan="5" class="empty" style="text-align:center">${state.futOrders.some(o => o.kind === "close")
+    ? "当前筛选范围内无平仓记录" : "暂无平仓记录，平仓一笔合约后这里会生成币种排行"}</td></tr>`;
+  if(!closes.length){ el.innerHTML = emptyRow; return; }
+  const map = {};
+  for(const o of closes){
+    const m = map[o.base] || (map[o.base] = { base: o.base, n: 0, win: 0, net: 0 });
+    m.n++;
+    if(o.pnl > 0) m.win++;
+    m.net += o.pnl - o.fee;
+  }
+  const arr = Object.values(map)
+    .map(m => ({ ...m, wr: m.win / m.n * 100 }))
+    .sort((a, b) => b.wr - a.wr || b.net - a.net || b.n - a.n);
+  el.innerHTML = arr.map((m, i) => `<tr>
+      <td class="mid">${i + 1}</td>
+      <td><b>${m.base}</b></td>
+      <td>${m.n}</td>
+      <td class="${m.wr >= 50 ? "up" : "down"}">${fmt(m.wr, 1)}%</td>
+      <td class="${m.net > 0 ? "up" : m.net < 0 ? "down" : "mid"}">${futFmtSign(m.net)}</td>
+    </tr>`).join("");
+}
+
+// 单笔净盈亏分布直方图：以 0 为中心对称分 11 桶，负红正绿、零轴黄；笔数最多的一桶决定柱高比例
+function drawFstatHistogram(closes){
+  const cv = document.getElementById("fstatHistChart");
+  if(!cv) return;
+  const box = cv.parentElement;
+  const W = box.clientWidth, H = box.clientHeight;
+  if(W <= 0 || H <= 0) return;
+  const dpr = window.devicePixelRatio || 1;
+  cv.width = Math.round(W * dpr); cv.height = Math.round(H * dpr);
+  const g = cv.getContext("2d");
+  g.setTransform(dpr, 0, 0, dpr, 0, 0);
+  g.clearRect(0, 0, W, H);
+  g.font = "11px ui-monospace,Menlo,monospace";
+  g.fillStyle = "#848e9c";
+  if(!closes.length){
+    g.textAlign = "center"; g.textBaseline = "middle";
+    g.fillText(state.futOrders.some(o => o.kind === "close") ? "当前筛选范围内无平仓记录" : "暂无平仓记录", W / 2, H / 2);
+    return;
+  }
+  const padL = 8, padR = 8, padT = 16, padB = 20;
+  const cw = W - padL - padR, ch = H - padT - padB;
+  const nets = closes.map(o => o.pnl - o.fee);
+  const maxAbs = Math.max(...nets.map(v => Math.abs(v)), 1e-9);
+  const bins = 11, mid = (bins - 1) / 2;      // mid=5 即贴近 0 的中间桶
+  const width = maxAbs * 2 / bins;
+  const counts = new Array(bins).fill(0);
+  for(const v of nets){
+    const i = Math.max(0, Math.min(bins - 1, Math.floor((v + maxAbs) / width)));
+    counts[i]++;
+  }
+  const maxC = Math.max(...counts, 1);
+  const bw = cw / bins;
+  const zeroX = padL + bw * mid;
+  g.strokeStyle = "rgba(43,49,57,.9)";
+  g.beginPath(); g.moveTo(zeroX, padT); g.lineTo(zeroX, padT + ch); g.stroke();
+  counts.forEach((c, i) => {
+    if(!c) return;
+    const h = c / maxC * ch;
+    g.fillStyle = i < mid ? "#f6465d" : i > mid ? "#0ecb81" : "#f0b90b";
+    g.fillRect(padL + bw * i + 2, padT + ch - h, Math.max(1, bw - 4), h);
+  });
+  g.textAlign = "left"; g.textBaseline = "middle";
+  g.fillText(maxC + " 笔", padL, padT - 8);
+  g.textAlign = "left";  g.fillText(fmt(-maxAbs, 2), padL, H - 8);
+  g.textAlign = "center"; g.fillText("0", zeroX, H - 8);
+  g.textAlign = "right"; g.fillText("+" + fmt(maxAbs, 2), W - padR, H - 8);
 }
 
 /* ---------- 账户风险日限额（build 41） ---------- */
