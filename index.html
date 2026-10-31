@@ -176,6 +176,12 @@ tbody tr:hover{background:var(--panel2)}
 .plan ul{list-style:none;margin:12px 0;font-size:12.5px;color:var(--muted)}
 .plan ul li{padding:4px 0;padding-left:16px;position:relative}
 .plan ul li::before{content:"✓";position:absolute;left:0;color:var(--green);font-size:11px}
+.plan ul li.off{color:#5b6472}
+.plan ul li.off::before{content:"×";color:var(--red)}
+/* 会员未解锁的指标/画线按钮：置灰不可点，title 说明升级条件 */
+.tf button:disabled{opacity:.45;cursor:not-allowed}
+.tf button:disabled:hover{color:var(--muted);border-color:var(--border)}
+.trade-btn:disabled{opacity:.45;cursor:not-allowed}
 .plan .act{width:100%;padding:9px;border-radius:6px;background:var(--panel);border:1px solid var(--border);font-weight:600;font-size:13px}
 .plan .act:hover{background:var(--yellow);color:#0b0e11;border-color:var(--yellow)}
 .plan .act.cur{background:transparent;border-color:var(--green);color:var(--green);cursor:default}
@@ -831,13 +837,20 @@ tbody tr:hover{background:var(--panel2)}
         <div class="kpi" id="mLevel" style="color:var(--yellow)">FREE</div>
         <div class="sub" id="mExpire" style="margin:0"></div>
       </div>
-      <div class="sub" style="margin-top:10px">等级影响：交易手续费率、理财年化加成。订阅为模拟操作，不产生任何真实扣费。</div>
+      <div class="sub" style="margin-top:10px" id="mBenefits">等级影响：交易手续费率、理财年化加成。订阅为模拟操作，不产生任何真实扣费。</div>
     </div>
     <div class="grid g3" id="plans"></div>
+    <div class="card" style="margin-top:12px">
+      <h3>等级权益对照 · 全部为实际生效的差异</h3>
+      <table>
+        <thead><tr><th>权益</th><th>FREE</th><th>PRO</th><th>VIP</th></tr></thead>
+        <tbody id="tierCompareBody"></tbody>
+      </table>
+    </div>
   </section>
 
   <div class="foot">
-    模拟交易所 · Paper Exchange — 仅用于界面与流程演示 · build <span id="buildVer">20261031-47</span><br>
+    模拟交易所 · Paper Exchange — 仅用于界面与流程演示 · build <span id="buildVer">20261031-48</span><br>
     不构成投资建议，不涉及真实资金、真实交易、真实收益
   </div>
 </div>
@@ -859,10 +872,18 @@ const COINS = [
   { base:"DOGE", quote:"USDT", name:"Dogecoin", icon:"Ð", fallback:0.12,   prec:2 },
 ];
 
+// 指标按钮顺序（会员分级即按这个顺序从少到多解锁）
+const IND_ORDER = ["macd","rsi","boll","kdj","obv","wr","dmi","cci","atr","mtm",
+                   "trix","bias","psy","roc","dma","sar","expma","mavol","emv","cr"];
+
+// 会员等级：权益全部在这里定义，界面文案与实现都读同一份配置，避免「说了没做」
 const TIERS = {
-  FREE:{ label:"FREE", fee:0.0010,  apyBoost:0, color:"var(--yellow)" },
-  PRO: { label:"PRO",  fee:0.0005,  apyBoost:2, color:"var(--green)" },
-  VIP: { label:"VIP",  fee:0.0002,  apyBoost:4, color:"#c084fc" },
+  FREE:{ label:"FREE", fee:0.0010, apyBoost:0, color:"var(--yellow)",
+         pollMs:30000, draw:false, exportAgg:false, inds: IND_ORDER.slice(0, 5)  },  // 基础 5 指标
+  PRO: { label:"PRO",  fee:0.0005, apyBoost:2, color:"var(--green)",
+         pollMs:15000, draw:true,  exportAgg:true,  inds: IND_ORDER.slice(0, 11) },  // 11 指标 + 画线 + 汇总导出
+  VIP: { label:"VIP",  fee:0.0002, apyBoost:4, color:"#c084fc",
+         pollMs:8000,  draw:true,  exportAgg:true,  inds: IND_ORDER.slice()     },  // 全部指标 + 8s 刷新
 };
 
 const EARN_PRODUCTS = [
@@ -1222,6 +1243,37 @@ let kShowEMV = false;    // EMV 子图
 let kShowCR  = false;    // CR 子图
 let kInd = null;       // 全量指标缓存 {dif, dea, bar, r6, r12, r24, boll, kdj}，按 klines 绝对下标对齐
 let kReqSeq = 0;       // 请求序号：并发时只接受最后一次发起的结果
+
+// 指标开关统一读写入口：点击切换、会员降级时批量关闭锁定指标，都走这里
+function indFlagOn(ind){
+  switch(ind){
+    case "macd": return kShowMACD;   case "rsi": return kShowRSI;
+    case "boll": return kShowBOLL;   case "kdj": return kShowKDJ;
+    case "obv":  return kShowOBV;    case "wr":  return kShowWR;
+    case "dmi":  return kShowDMI;    case "cci": return kShowCCI;
+    case "atr":  return kShowATR;    case "mtm": return kShowMTM;
+    case "trix": return kShowTRIX;   case "bias": return kShowBIAS;
+    case "psy":  return kShowPSY;    case "roc":  return kShowROC;
+    case "dma":  return kShowDMA;    case "sar":  return kShowSAR;
+    case "expma": return kShowEXPMA; case "mavol": return kShowMAVOL;
+    case "emv":  return kShowEMV;    case "cr":   return kShowCR;
+  }
+  return false;
+}
+function setIndFlag(ind, v){
+  switch(ind){
+    case "macd": kShowMACD = v; break;   case "rsi": kShowRSI = v; break;
+    case "boll": kShowBOLL = v; break;   case "kdj": kShowKDJ = v; break;
+    case "obv":  kShowOBV = v;  break;   case "wr":  kShowWR = v;  break;
+    case "dmi":  kShowDMI = v;  break;   case "cci": kShowCCI = v; break;
+    case "atr":  kShowATR = v;  break;   case "mtm": kShowMTM = v; break;
+    case "trix": kShowTRIX = v; break;   case "bias": kShowBIAS = v; break;
+    case "psy":  kShowPSY = v;  break;   case "roc": kShowROC = v; break;
+    case "dma":  kShowDMA = v;  break;   case "sar": kShowSAR = v; break;
+    case "expma": kShowEXPMA = v; break; case "mavol": kShowMAVOL = v; break;
+    case "emv":  kShowEMV = v;  break;   case "cr":  kShowCR = v;  break;
+  }
+}
 
 async function fetchKlines(resetView){
   const seq = ++kReqSeq;
@@ -3359,6 +3411,32 @@ function exportEarnCsv(){
 document.getElementById("btnExportEarn").addEventListener("click", exportEarnCsv);
 
 /* ---------- 渲染：会员 ---------- */
+// 把当前等级的权益落到界面上：指标锁定、画线工具、汇总导出；降级时立即关掉已锁定的指标并重绘
+function applyTierGating(){
+  const t = tierInfo();
+  let changed = false;
+  document.querySelectorAll("#indBtns button[data-ind]").forEach(b => {
+    const ind = b.dataset.ind;
+    const ok = t.inds.includes(ind);
+    b.disabled = !ok;
+    b.title = ok ? "" : `需 PRO 及以上会员解锁（当前 ${t.label}）`;
+    if(!ok && indFlagOn(ind)){ setIndFlag(ind, false); changed = true; }   // 锁定的指标不能点亮点亮
+    b.classList.toggle("on", indFlagOn(ind));
+  });
+  document.querySelectorAll("#drawBtns button[data-draw]").forEach(b => {
+    b.disabled = !t.draw;
+    b.title = t.draw ? "" : `画线工具需 PRO 及以上会员（当前 ${t.label}）`;
+  });
+  if(!t.draw && drawMode){ drawMode = null; drawPending = null; drawPreview = null; changed = true; }
+  const agg = document.getElementById("btnExportFstatAgg");
+  if(agg){
+    agg.disabled = !t.exportAgg;
+    agg.title = t.exportAgg ? "" : `汇总导出需 PRO 及以上会员（当前 ${t.label}）`;
+  }
+  if(changed) drawKline();
+  return t;
+}
+
 function renderMember(){
   const t = tierInfo();
   const lv = document.getElementById("mLevel");
@@ -3376,22 +3454,57 @@ function renderMember(){
   badge.textContent = t.label;
   badge.className = "badge" + (t.label==="PRO"?" pro":t.label==="VIP"?" vip":"");
 
+  // 当前等级一句话摘要，数字全部来自 TIERS 配置
+  const mb = document.getElementById("mBenefits");
+  if(mb){
+    mb.textContent = `当前权益：交易手续费 ${(t.fee*100).toFixed(2)}% · 理财加成 +${t.apyBoost}% · `
+      + `K 线指标 ${t.inds.length}/${IND_ORDER.length} · 行情 ${t.pollMs/1000}s 刷新 · `
+      + `画线${t.draw?"可用":"未解锁"} · 盈亏汇总导出${t.exportAgg?"可用":"未解锁"}`
+      + `。订阅为模拟操作，不产生任何真实扣费。`;
+  }
+
   const plans = [
-    { tier:"FREE", price:0,    per:"",     items:["交易手续费 0.10%","活期年化 4.0%","基础行情"] },
-    { tier:"PRO",  price:99,   per:"/月",  items:["交易手续费 0.05%","活期年化 6.0%","定期年化 +2%","优先撮合（模拟）"] },
-    { tier:"VIP",  price:499,  per:"/月",  items:["交易手续费 0.02%","活期年化 8.0%","定期年化 +4%","专属客服通道（模拟）"] },
+    { tier:"FREE", price:0,    per:"" },
+    { tier:"PRO",  price:99,   per:"/月" },
+    { tier:"VIP",  price:499,  per:"/月" },
+  ];
+  const planItems = cap => [
+    { txt:`交易手续费 ${(cap.fee*100).toFixed(2)}%`, ok:true },
+    { txt:`活期 ${(4+cap.apyBoost).toFixed(1)}% · 30 天定期 ${(6+cap.apyBoost).toFixed(1)}%`, ok:true },
+    { txt:`K 线指标 ${cap.inds.length}/${IND_ORDER.length} 个`, ok:true },
+    { txt:`行情 ${cap.pollMs/1000}s 刷新`, ok:true },
+    { txt:"画线工具（水平线 / 趋势线）", ok:cap.draw },
+    { txt:"盈亏汇总 CSV 导出", ok:cap.exportAgg },
   ];
   document.getElementById("plans").innerHTML = plans.map(p=>{
     const cur = state.member.tier === p.tier;
+    const cap = TIERS[p.tier];
     return `<div class="plan ${cur?"on":""}">
-      <div class="tier" style="color:${TIERS[p.tier].color}">${p.tier}</div>
+      <div class="tier" style="color:${cap.color}">${p.tier}</div>
       <div class="price">${p.price===0?"免费":"¥"+p.price}<small>${p.per}</small></div>
-      <ul>${p.items.map(i=>`<li>${i}</li>`).join("")}</ul>
+      <ul>${planItems(cap).map(i=>`<li class="${i.ok?"":"off"}">${i.txt}</li>`).join("")}</ul>
       <button class="act ${cur?"cur":""}" data-plan="${p.tier}" ${cur?"disabled":""}>
         ${cur ? "当前等级" : p.price===0 ? "降级到 FREE" : "模拟订阅"}
       </button>
     </div>`;
   }).join("");
+
+  // 权益对照表：同一份 TIERS 配置生成，避免文案与实现不符
+  const rows = [
+    ["交易手续费",  c => (c.fee*100).toFixed(2) + "%"],
+    ["活期年化（30 天定期再 +2%）", c => (4 + c.apyBoost).toFixed(1) + "%（" + (6 + c.apyBoost).toFixed(1) + "%）"],
+    ["K 线指标数量", c => `${c.inds.length} / ${IND_ORDER.length} 个`],
+    ["行情刷新间隔", c => (c.pollMs/1000) + " 秒"],
+    ["K 线画线工具", c => c.draw ? "支持" : "不支持"],
+    ["盈亏汇总 CSV 导出", c => c.exportAgg ? "支持" : "不支持"],
+  ];
+  const cb = document.getElementById("tierCompareBody");
+  if(cb){
+    cb.innerHTML = rows.map(([name, fn]) =>
+      `<tr><td>${name}</td><td class="mid">${fn(TIERS.FREE)}</td><td class="mid">${fn(TIERS.PRO)}</td><td class="mid">${fn(TIERS.VIP)}</td></tr>`
+    ).join("");
+  }
+  applyTierGating();   // 会员页渲染时同步锁定态（订阅/降级/跨页切换都能立刻生效）
 }
 
 /* ---------- 渲染：订单历史 ---------- */
@@ -4434,6 +4547,7 @@ document.getElementById("btnExportFstat").addEventListener("click", exportFutSta
 
 // 导出聚合汇总 CSV：按币种×方向的汇总表 + 合计行，与面板明细表完全同口径
 function exportFutStatsAggCsv(){
+  if(!tierInfo().exportAgg){ toast("汇总导出需 PRO 及以上会员解锁", "err"); return; }
   const closes = fstatCloses();
   if(!closes.length){ toast("当前筛选下无平仓记录可汇总", "err"); return; }
   const rows = [["币种","方向","平仓笔数","胜","负","胜率(%)","已实现盈亏(USDT)","平仓手续费(USDT)","净盈亏(USDT)"]];
@@ -5263,13 +5377,14 @@ function redeem(index){
 function setPlan(tier){
   if(tier === "FREE"){
     state.member = { tier:"FREE", expireAt:0 };
-    save(); renderAll(); toast("已降级到 FREE", "ok");
+    save(); renderAll(); schedulePricePoll();   // 降级后行情刷新间隔立即改回 FREE 档
+    toast("已降级到 FREE", "ok");
     return;
   }
   const ok = confirm(`模拟订阅 ${tier}？\n\n这不会产生任何真实扣费，仅用于演示会员权益差异。`);
   if(!ok) return;
   state.member = { tier, expireAt: Date.now() + 30*86400000 };
-  save(); renderAll();
+  save(); renderAll(); schedulePricePoll();   // 升级后按新等级调整行情刷新间隔
   toast(`已切换为 ${tier}（模拟，30 天）`, "ok");
 }
 
@@ -5417,34 +5532,19 @@ document.getElementById("tfBtns").addEventListener("click", e=>{
   fetchKlines(true);
 });
 
-// 指标开关：MACD / RSI 子图显隐，BOLL 叠加主图，KDJ 子图
-document.querySelector('#indBtns [data-ind="macd"]').classList.toggle("on", kShowMACD);
+// 指标开关：会员未解锁的指标按钮直接置灰，点击给出升级提示
 document.getElementById("indBtns").addEventListener("click", e=>{
   const b = e.target.closest("button[data-ind]");
   if(!b) return;
   const ind = b.dataset.ind;
-  if(ind === "macd")      kShowMACD = !kShowMACD;
-  else if(ind === "rsi")  kShowRSI  = !kShowRSI;
-  else if(ind === "boll") kShowBOLL = !kShowBOLL;
-  else if(ind === "kdj")  kShowKDJ  = !kShowKDJ;
-  else if(ind === "obv")  kShowOBV  = !kShowOBV;
-  else if(ind === "wr")   kShowWR   = !kShowWR;
-  else if(ind === "dmi")  kShowDMI  = !kShowDMI;
-  else if(ind === "cci")  kShowCCI  = !kShowCCI;
-  else if(ind === "atr")  kShowATR  = !kShowATR;
-  else if(ind === "mtm")  kShowMTM  = !kShowMTM;
-  else if(ind === "trix") kShowTRIX = !kShowTRIX;
-  else if(ind === "bias") kShowBIAS = !kShowBIAS;
-  else if(ind === "psy")  kShowPSY  = !kShowPSY;
-  else if(ind === "roc")  kShowROC  = !kShowROC;
-  else if(ind === "dma")  kShowDMA  = !kShowDMA;
-  else if(ind === "sar")  kShowSAR  = !kShowSAR;
-  else if(ind === "expma") kShowEXPMA = !kShowEXPMA;
-  else if(ind === "mavol") kShowMAVOL = !kShowMAVOL;
-  else if(ind === "emv")   kShowEMV   = !kShowEMV;
-  else if(ind === "cr")    kShowCR    = !kShowCR;
-  else return;
-  b.classList.toggle("on");
+  if(!IND_ORDER.includes(ind)) return;
+  const t = tierInfo();
+  if(!t.inds.includes(ind)){
+    toast(`${b.textContent} 指标需 PRO 及以上会员，当前 ${t.label} 未解锁`, "err");
+    return;
+  }
+  setIndFlag(ind, !indFlagOn(ind));
+  b.classList.toggle("on", indFlagOn(ind));
   drawKline();
 });
 
@@ -5452,6 +5552,7 @@ document.getElementById("indBtns").addEventListener("click", e=>{
 document.getElementById("drawBtns").addEventListener("click", e => {
   const b = e.target.closest("button[data-draw]");
   if(!b) return;
+  if(!tierInfo().draw){ toast("画线工具需 PRO 及以上会员解锁", "err"); return; }
   const act = b.dataset.draw;
   if(act === "clear"){
     if(!curDrawings().length){ toast("当前币种/周期没有画线", "err"); return; }
@@ -5799,12 +5900,22 @@ function checkPriceAlerts(){
 }
 
 /* ---------- 启动 ---------- */
+// 行情轮询跟随会员等级（FREE 30s / PRO 15s / VIP 8s），用 setTimeout 链保证改等级后下一轮就生效
+let pricePollTimer = null;
+function schedulePricePoll(){
+  clearTimeout(pricePollTimer);
+  pricePollTimer = setTimeout(()=>{
+    fetchPrices(); fetchKlines();
+    schedulePricePoll();
+  }, tierInfo().pollMs);
+}
+
 load();
 for(const c of COINS){ prices[c.base] = c.fallback; meta[c.base] = { changePct:null, high:null, low:null }; }
 renderAll();
 fetchPrices();
 fetchKlines(true);
-setInterval(()=>{ fetchPrices(); fetchKlines(); }, 15000);
+schedulePricePoll();
 setInterval(()=>{ settleFunding(); checkFutOpenOrders(); checkFutTpSl(); checkLiquidation(); renderEarn(); renderAssets(); renderFutures(); document.getElementById("topUsdt").textContent = fmt(state.usdt,2) + " USDT"; }, 5000);
 </script>
 </body>
