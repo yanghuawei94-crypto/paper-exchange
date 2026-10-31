@@ -119,8 +119,12 @@ tbody tr:hover{background:var(--panel2)}
 }
 .tf button:hover{color:var(--text);border-color:var(--yellow)}
 .tf button.on{background:var(--yellow);color:#0b0e11;border-color:var(--yellow);font-weight:600}
-/* 指标按钮已到 10 个，窄屏允许换行，避免横向溢出被裁掉 */
+/* 指标按钮已到 20 个：桌面换行，手机单行横向滚动（规则放在媒体查询里，必须位于基础规则之后才生效） */
 #indBtns{flex-wrap:wrap}
+@media(max-width:760px){
+  #indBtns{flex-wrap:nowrap;overflow-x:auto;max-width:100%;-webkit-overflow-scrolling:touch;padding-bottom:2px}
+  #indBtns button{flex:none}
+}
 /* 画线工具栏：窄屏允许换行，不挤占 K 线高度 */
 .draw-bar{display:flex;align-items:center;gap:8px;margin-bottom:8px;flex-wrap:wrap}
 .draw-bar .tf button.on{background:var(--yellow);color:#0b0e11;border-color:var(--yellow);font-weight:600}
@@ -304,7 +308,7 @@ tbody tr:hover{background:var(--panel2)}
       <div class="chart-head">
         <h3 style="margin:0">K 线 · <span id="kTitle">BTC/USDT</span>
           <span class="mid" id="kTag" style="font-weight:400;font-size:11px"></span></h3>
-        <span class="mid" style="font-size:11px">滚轮缩放 · 拖动平移 · 悬停看明细</span>
+        <span class="mid" style="font-size:11px" id="klineHint">滚轮缩放 · 拖动平移 · 悬停看明细</span>
         <div class="tf" id="tfBtns">
           <button data-tf="1m" class="on">1m</button>
           <button data-tf="15m">15m</button>
@@ -343,7 +347,7 @@ tbody tr:hover{background:var(--panel2)}
           <button data-draw="erase">橡皮擦</button>
           <button data-draw="clear">清空</button>
         </div>
-        <span class="mid" style="font-size:11px">点击画线 · 靠近线可拖动 · 按币种和周期分别保存</span>
+        <span class="mid" style="font-size:11px">点击画线 · 靠近线可拖动 · 手机长按看十字光标 · 按币种和周期分别保存</span>
       </div>
       <div class="chart-box"><canvas id="klineCanvas"></canvas></div>
     </div>
@@ -850,7 +854,7 @@ tbody tr:hover{background:var(--panel2)}
   </section>
 
   <div class="foot">
-    模拟交易所 · Paper Exchange — 仅用于界面与流程演示 · build <span id="buildVer">20261031-48</span><br>
+    模拟交易所 · Paper Exchange — 仅用于界面与流程演示 · build <span id="buildVer">20261031-49</span><br>
     不构成投资建议，不涉及真实资金、真实交易、真实收益
   </div>
 </div>
@@ -2762,16 +2766,48 @@ function drawHover(idx, my){
   });
 
   // ---- 触屏交互（手机端没有滚轮和悬停）----
-  // 单指左右拖动 = 平移看历史；双指捏合 = 缩放；轻点 = 显示该根 K 线明细
+  // 单指左右拖动 = 平移看历史；双指捏合 = 以双指中心为锚点缩放；轻点 = 显示该根 K 线明细；长按 = 十字光标
   let kTouch = null;
+  let kLongPress = null;   // 长按定时器（长按 420ms 进入十字光标模式）
+
+  function clearLongPress(){
+    if(kLongPress){ clearTimeout(kLongPress); kLongPress = null; }
+  }
+  // 把屏幕坐标换算成可视窗口内的下标
+  function touchIdx(x){
+    if(!kLayout) return -1;
+    return kLayout.start + Math.max(0, Math.min(kLayout.count - 1,
+      Math.floor((x - kLayout.padL) / kLayout.slot)));
+  }
+
   cv.addEventListener("touchstart", e => {
     if(!klines.length || !kLayout) return;
     if(e.touches.length === 2){
+      clearLongPress();
+      // 记录双指中心与中心所在的绝对 K 线下标，缩放时保持该根不动
+      const rect = cv.getBoundingClientRect();
+      const cx = (e.touches[0].clientX + e.touches[1].clientX) / 2 - rect.left;
+      const idxAbs = kLayout.start + (cx - kLayout.padL) / kLayout.slot;
       kTouch = { mode:"pinch", zoom: kZoom,
         dist: Math.hypot(e.touches[0].clientX - e.touches[1].clientX,
-                         e.touches[0].clientY - e.touches[1].clientY) };
+                         e.touches[0].clientY - e.touches[1].clientY),
+        idxAbs, cx, padL: kLayout.padL, cw: kLayout.cw };
     }else{
+      const rect = cv.getBoundingClientRect();
+      const x = e.touches[0].clientX - rect.left;
+      const y = e.touches[0].clientY - rect.top;
       kTouch = { mode:"tap", x: e.touches[0].clientX, off: kOffset, moved: false };
+      // 长按 420ms：不移动且未在画线模式时，弹出十字光标
+      clearLongPress();
+      if(!drawMode){
+        kLongPress = setTimeout(() => {
+          kLongPress = null;
+          if(!kTouch || kTouch.mode !== "tap" || kTouch.moved) return;
+          kTouch.mode = "cross";
+          const idx = touchIdx(x);
+          if(idx >= 0){ kHover = idx; kMouse = { y }; drawHover(idx, y); }
+        }, 420);
+      }
     }
     e.preventDefault();   // 阻止页面跟着滚动
   }, { passive:false });
@@ -2783,32 +2819,51 @@ function drawHover(idx, my){
       const d = Math.hypot(e.touches[0].clientX - e.touches[1].clientX,
                            e.touches[0].clientY - e.touches[1].clientY);
       const factor = d / kTouch.dist;          // 手指张开 factor>1 = 放大看细节
-      kZoom = Math.round(Math.max(20, Math.min(klines.length, kTouch.zoom / factor)));
-      kOffset = Math.max(0, Math.min(kOffset, klines.length - kZoom));
+      const zoom = Math.round(Math.max(20, Math.min(klines.length, kTouch.zoom / factor)));
+      // 以双指中心为锚点：缩放后让原来中心那根 K 线仍停在手指中心
+      const fr = kTouch.cw > 0 ? (kTouch.cx - kTouch.padL) / kTouch.cw : 0.5;
+      const off = klines.length - zoom * (1 - fr) - kTouch.idxAbs;
+      kZoom = zoom;
+      kOffset = Math.max(0, Math.min(Math.max(0, klines.length - kZoom), Math.round(off)));
       kHover = -1; drawKline();
     }else if(e.touches.length === 1 && kTouch.mode !== "pinch"){
       const dx = e.touches[0].clientX - kTouch.x;
-      if(Math.abs(dx) > 6){ kTouch.mode = "pan"; kTouch.moved = true; }   // 超过阈值才算拖动
+      if(kTouch.mode !== "cross" && Math.abs(dx) > 6){
+        clearLongPress();                       // 开始拖动就取消长按，避免误触十字光标
+        kTouch.mode = "pan"; kTouch.moved = true;
+      }
       if(kTouch.mode === "pan"){
         const steps = Math.round(dx / kLayout.slot);
         kOffset = Math.max(0, Math.min(Math.max(0, klines.length - kZoom), kTouch.off + steps));
         kHover = -1; drawKline();
+      }else if(kTouch.mode === "cross"){
+        // 十字光标模式下，手指移动 = 移动十字光标（不平移）
+        const rect = cv.getBoundingClientRect();
+        const x = e.touches[0].clientX - rect.left;
+        const y = e.touches[0].clientY - rect.top;
+        const idx = touchIdx(x);
+        if(idx >= 0){ kHover = idx; kMouse = { y }; drawHover(idx, y); }
       }
     }
   }, { passive:false });
 
   cv.addEventListener("touchend", e => {
+    clearLongPress();
     if(!kTouch) return;
     if(kTouch.mode === "tap" && !kTouch.moved && kLayout && kBase){
       const rect = cv.getBoundingClientRect();
       const x = e.changedTouches[0].clientX - rect.left;
       const y = e.changedTouches[0].clientY - rect.top;
       if(drawMode){ drawTapAt(x, y); kTouch = null; return; }   // 触屏同样可画线/删除
-      const idx = kLayout.start + Math.max(0, Math.min(kLayout.count - 1,
-        Math.floor((x - kLayout.padL) / kLayout.slot)));
-      kHover = idx; kMouse = { y };
-      drawHover(idx, y);
+      const idx = touchIdx(x);
+      if(idx >= 0){ kHover = idx; kMouse = { y }; drawHover(idx, y); }
     }
+    // cross 模式保留光标，方便单指松手后继续查看数值
+    kTouch = null;
+  });
+
+  cv.addEventListener("touchcancel", () => {
+    clearLongPress();
     kTouch = null;
   });
 
@@ -3492,7 +3547,7 @@ function renderMember(){
   // 权益对照表：同一份 TIERS 配置生成，避免文案与实现不符
   const rows = [
     ["交易手续费",  c => (c.fee*100).toFixed(2) + "%"],
-    ["活期年化（30 天定期再 +2%）", c => (4 + c.apyBoost).toFixed(1) + "%（" + (6 + c.apyBoost).toFixed(1) + "%）"],
+    ["活期 / 定期年化", c => (4 + c.apyBoost).toFixed(1) + "%（" + (6 + c.apyBoost).toFixed(1) + "%）"],
     ["K 线指标数量", c => `${c.inds.length} / ${IND_ORDER.length} 个`],
     ["行情刷新间隔", c => (c.pollMs/1000) + " 秒"],
     ["K 线画线工具", c => c.draw ? "支持" : "不支持"],
@@ -5575,8 +5630,21 @@ document.getElementById("drawBtns").addEventListener("click", e => {
 // 窗口尺寸变化时重绘（节流）
 window.addEventListener("resize", ()=>{
   clearTimeout(window._klineTimer);
-  window._klineTimer = setTimeout(()=>{ drawKline(); drawPnl(); renderAssets(); }, 150);
+  window._klineTimer = setTimeout(()=>{
+    drawKline(); drawPnl(); renderAssets();
+    drawFstatHistogram(fstatCloses());   // 直方图按容器宽度重算，窄屏/旋转屏幕后不拉伸变形
+  }, 150);
 });
+
+// 操作提示随屏幕宽度切换：手机没有滚轮和悬停，文案改为触屏手势
+function syncKlineHint(){
+  const el = document.getElementById("klineHint");
+  if(el) el.textContent = window.innerWidth <= 760
+    ? "双指缩放 · 拖动平移 · 轻点/长按看明细"
+    : "滚轮缩放 · 拖动平移 · 悬停看明细";
+}
+syncKlineHint();
+window.addEventListener("resize", syncKlineHint);
 
 // 盈亏走势图 hover：按 x 坐标找最近采样点
 document.getElementById("pnlCanvas").addEventListener("mousemove", e=>{
