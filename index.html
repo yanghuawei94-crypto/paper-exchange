@@ -320,6 +320,7 @@ tbody tr:hover{background:var(--panel2)}
           <button data-ind="roc">ROC</button>
           <button data-ind="dma">DMA</button>
           <button data-ind="sar">SAR</button>
+          <button data-ind="expma">EXPMA</button>
         </div>
       </div>
       <div class="chart-box"><canvas id="klineCanvas"></canvas></div>
@@ -798,7 +799,7 @@ tbody tr:hover{background:var(--panel2)}
   </section>
 
   <div class="foot">
-    模拟交易所 · Paper Exchange — 仅用于界面与流程演示 · build <span id="buildVer">20261031-43</span><br>
+    模拟交易所 · Paper Exchange — 仅用于界面与流程演示 · build <span id="buildVer">20261031-44</span><br>
     不构成投资建议，不涉及真实资金、真实交易、真实收益
   </div>
 </div>
@@ -1177,6 +1178,7 @@ let kShowPSY  = false;
 let kShowROC  = false;
 let kShowDMA  = false;
 let kShowSAR  = false;   // SAR 叠加在主图，不占子图
+let kShowEXPMA = false;  // EXPMA 快/慢线叠加在主图，不占子图
 let kInd = null;       // 全量指标缓存 {dif, dea, bar, r6, r12, r24, boll, kdj}，按 klines 绝对下标对齐
 let kReqSeq = 0;       // 请求序号：并发时只接受最后一次发起的结果
 
@@ -1677,7 +1679,7 @@ function drawKline(){
   const allCloses = klines.map(k => k.c);
   kInd = null;
   if(kShowMACD || kShowRSI || kShowBOLL || kShowKDJ || kShowOBV || kShowWR || kShowDMI || kShowCCI || kShowATR || kShowMTM
-     || kShowTRIX || kShowBIAS || kShowPSY || kShowROC || kShowDMA || kShowSAR){
+     || kShowTRIX || kShowBIAS || kShowPSY || kShowROC || kShowDMA || kShowSAR || kShowEXPMA){
     kInd = {};
     if(kShowMACD) Object.assign(kInd, macdOf(allCloses));
     if(kShowRSI){ kInd.r6 = rsiOf(allCloses, 6); kInd.r12 = rsiOf(allCloses, 12); kInd.r24 = rsiOf(allCloses, 24); }
@@ -1695,6 +1697,7 @@ function drawKline(){
     if(kShowROC)  kInd.roc  = rocOf(klines);
     if(kShowDMA)  kInd.dma  = dmaOf(klines);
     if(kShowSAR)  kInd.sar  = sarOf(klines);
+    if(kShowEXPMA) kInd.expma = { f: ema(allCloses, 12), s: ema(allCloses, 50) };   // EXPMA 即 EMA：快 12 / 慢 50
   }
 
   let hi = -Infinity, lo = Infinity, vmax = 0;
@@ -1718,6 +1721,17 @@ function drawKline(){
       if(v === null) continue;
       if(v > hi) hi = v;
       if(v < lo) lo = v;
+    }
+  }
+  // EXPMA 快/慢线叠加主图，同样纳入价格范围
+  if(kShowEXPMA && kInd && kInd.expma){
+    for(let i = 0; i < vis.length; i++){
+      const idx = start + i;
+      for(const v of [kInd.expma.f[idx], kInd.expma.s[idx]]){
+        if(v === null) continue;
+        if(v > hi) hi = v;
+        if(v < lo) lo = v;
+      }
     }
   }
   if(!isFinite(hi) || !isFinite(lo) || hi === lo) hi = lo + 1;
@@ -1824,6 +1838,25 @@ function drawKline(){
     g.fillStyle = "#848e9c"; g.textAlign = "left"; g.textBaseline = "middle";
     // BOLL 也开着时标签下移一行，避免两个面板名叠在一起
     g.fillText("SAR 0.02·0.2", padL + 4, priceTop + (kShowBOLL && kInd && kInd.boll ? 21 : 9));
+  }
+
+  // EXPMA 叠加主图：快线 12（黄）/ 慢线 50（紫），金叉死叉趋势参考
+  if(kShowEXPMA && kInd && kInd.expma){
+    [[kInd.expma.f, "#f0b90b"], [kInd.expma.s, "#c084fc"]].forEach(([arr, color]) => {
+      g.strokeStyle = color; g.lineWidth = 1.2; g.beginPath();
+      let started = false;
+      vis.forEach((_, i) => {
+        const v = arr[start + i];
+        if(v === null) return;
+        const x = padL + slot * (i + 0.5), y = yOf(v);
+        if(!started){ g.moveTo(x, y); started = true; } else g.lineTo(x, y);
+      });
+      g.stroke();
+    });
+    g.font = "10px ui-monospace,Menlo,monospace";
+    g.fillStyle = "#848e9c"; g.textAlign = "left"; g.textBaseline = "middle";
+    // 面板名排在 BOLL / SAR 标签之后，逐行下移避免重叠
+    g.fillText("EXPMA 12·50", padL + 4, priceTop + 9 + (kShowBOLL && kInd && kInd.boll ? 12 : 0) + (kShowSAR && kInd && kInd.sar ? 12 : 0));
   }
 
   // 子图分隔线 + 面板名
@@ -2310,6 +2343,10 @@ function drawHover(idx, my){
   }
   if(kInd && kInd.sar && kInd.sar.sar[idx] !== null){
     rows.push(["SAR", fmtPx(kInd.sar.sar[idx]), kInd.sar.bull[idx] ? "#0ecb81" : "#f6465d"]);
+  }
+  if(kInd && kInd.expma && kInd.expma.f[idx] !== null){
+    rows.push(["EXP快", fmtPx(kInd.expma.f[idx]), "#f0b90b"]);
+    rows.push(["EXP慢", fmtPx(kInd.expma.s[idx]), "#c084fc"]);
   }
   const bw = 152, bh = rows.length * 17 + 16;
   let bx = x + 14;
@@ -4930,6 +4967,7 @@ document.getElementById("indBtns").addEventListener("click", e=>{
   else if(ind === "roc")  kShowROC  = !kShowROC;
   else if(ind === "dma")  kShowDMA  = !kShowDMA;
   else if(ind === "sar")  kShowSAR  = !kShowSAR;
+  else if(ind === "expma") kShowEXPMA = !kShowEXPMA;
   else return;
   b.classList.toggle("on");
   drawKline();
