@@ -196,6 +196,14 @@ tbody tr:hover{background:var(--panel2)}
 .cal-cell{display:block;height:16px;border-radius:3px;background:var(--panel2)}
 .cal-future{opacity:0}   /* 未来日期占位，保持网格对齐 */
 @media(max-width:760px){ .cal-cell{height:12px} }
+
+/* 账户风险日限额警示条：黄 = 亏到限额 60%（接近）、红 = 达到限额 */
+#riskLimitBanner{border-radius:var(--r);padding:10px 12px;margin:0 0 10px;font-size:12.5px;line-height:1.8}
+#riskLimitBanner.warn{border:1px solid var(--yellow);background:rgba(240,185,11,.08)}
+#riskLimitBanner.hit{border:1px solid var(--red);background:rgba(246,70,93,.08)}
+#riskLimitBanner .bar{margin-top:8px}
+#riskLimitBanner .bar i{background:var(--red)}
+#riskLimitBanner.warn .bar i{background:var(--yellow)}
 </style>
 </head>
 <body>
@@ -496,6 +504,15 @@ tbody tr:hover{background:var(--panel2)}
             <button class="trade-btn" id="btnExportFstatAgg">导出汇总 CSV</button>
           </span>
         </div>
+        <!-- 账户风险日限额：当日净亏损（全部平仓单 pnl−fee）达到阈值时两级警示；账户级风控，不受下方盈亏筛选影响 -->
+        <div id="riskLimitBanner" class="hidden"></div>
+        <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin:0 0 10px">
+          <span class="mid" style="font-size:12px">单日亏损限额</span>
+          <input id="riskLimitInput" type="number" min="0" step="any" placeholder="0 = 关闭" style="width:96px;padding:4px 10px;background:var(--panel2);border:1px solid var(--border);border-radius:5px;color:var(--text);outline:none;font-size:12px">
+          <span class="mid" style="font-size:12px">USDT</span>
+          <button class="trade-btn" id="riskLimitSave" style="padding:4px 11px;font-size:12px">保存</button>
+          <span class="mid" id="riskLimitNow" style="font-size:12px;margin-left:auto"></span>
+        </div>
         <div class="tf" style="margin-bottom:6px" id="fstatTimeFilter">
           <button data-ftime="all" class="on">全部时间</button>
           <button data-ftime="1d">今天</button>
@@ -722,7 +739,7 @@ tbody tr:hover{background:var(--panel2)}
   </section>
 
   <div class="foot">
-    模拟交易所 · Paper Exchange — 仅用于界面与流程演示 · build <span id="buildVer">20261031-40</span><br>
+    模拟交易所 · Paper Exchange — 仅用于界面与流程演示 · build <span id="buildVer">20261031-41</span><br>
     不构成投资建议，不涉及真实资金、真实交易、真实收益
   </div>
 </div>
@@ -3635,6 +3652,7 @@ function renderFutStats(){
   drawFstatPnlChart(closes);
   renderFstatRisk(closes);
   renderFstatCalendar(closes);
+  renderRiskLimit();
 }
 
 // 风险与行为指标：最大回撤基于累计净盈亏曲线（与走势图同口径）；连胜连败/盈亏比/平均盈亏基于已实现盈亏（与胜率同口径，pnl > 0 为胜）
@@ -3711,6 +3729,70 @@ function renderFstatCalendar(closes){
   }
   el.innerHTML = html;
 }
+
+/* ---------- 账户风险日限额（build 41） ---------- */
+const RISKCFG_KEY = "paper_exchange_riskcfg_v1";   // 限额设置独立存档键（用户偏好，不进主存档，防旧标签页覆盖）
+
+let riskLimit = 0;        // 单日亏损限额（USDT），0 = 关闭
+let riskWarnedDay = "";   // 已弹过「达到限额」提醒的日期，同一天只提醒一次，跨天自动重置
+
+function loadRiskCfg(){
+  try{
+    const o = JSON.parse(localStorage.getItem(RISKCFG_KEY) || "null");
+    if(o && typeof o.limit === "number" && o.limit >= 0) riskLimit = o.limit;
+  }catch(e){}
+}
+function saveRiskCfg(){
+  try{ localStorage.setItem(RISKCFG_KEY, JSON.stringify({ limit: riskLimit })); }catch(e){}
+}
+loadRiskCfg();
+
+// 当日已实现净盈亏：全部平仓单 pnl − fee（账户级口径，不受盈亏分析三维筛选影响）
+function riskTodayNet(){
+  const today = new Date(); today.setHours(0, 0, 0, 0);
+  let net = 0;
+  for(const o of state.futOrders){
+    if(o.kind === "close" && orderTs(o.t) >= today.getTime()) net += o.pnl - o.fee;
+  }
+  return net;
+}
+
+// 渲染限额状态：警示条两级（亏到 60% 黄色提示 / 达到 100% 红色警示+toast）+ 输入框回显 + 右侧当日净盈亏
+function renderRiskLimit(){
+  const input = document.getElementById("riskLimitInput");
+  if(!input) return;
+  if(document.activeElement !== input) input.value = riskLimit > 0 ? riskLimit : "";   // 正在输入时不覆盖
+  const net = riskTodayNet();
+  const used = net < 0 ? -net : 0;   // 当日已亏金额
+  document.getElementById("riskLimitNow").textContent = riskLimit > 0
+    ? `今日净盈亏 ${net > 0 ? "+" : ""}${fmt(net, 2)} / 限额 ${fmt(riskLimit, 2)} USDT` : "";
+  const banner = document.getElementById("riskLimitBanner");
+  if(riskLimit <= 0 || used < riskLimit * 0.6){ banner.className = "hidden"; return; }
+  const hit = used >= riskLimit;
+  banner.className = hit ? "hit" : "warn";
+  banner.innerHTML = `${hit
+    ? "⚠ <b style='color:var(--red)'>已达到单日亏损限额</b>"
+    : "⚠ <b style='color:var(--yellow)'>接近单日亏损限额</b>"}<br>
+    今日已亏 <b class="down">${fmt(used, 2)}</b> / 限额 ${fmt(riskLimit, 2)} USDT（${fmt(used / riskLimit * 100, 0)}%）· ${hit ? "建议停止交易，明天再来看看" : "注意控制仓位与杠杆"}
+    <div class="bar"><i style="width:${Math.min(used / riskLimit * 100, 100)}%"></i></div>`;
+  // 达到限额当天只弹一次提醒
+  const dayKey = new Date().toDateString();
+  if(hit && riskWarnedDay !== dayKey){
+    riskWarnedDay = dayKey;
+    toast(`单日亏损 ${fmt(used, 2)} USDT 已达限额 ${fmt(riskLimit, 2)}，请注意风险`, "err");
+  }
+}
+
+// 保存限额设置（独立键持久化，多标签页经 storage 事件同步）
+document.getElementById("riskLimitSave").addEventListener("click", ()=>{
+  const raw = document.getElementById("riskLimitInput").value.trim();
+  const v = raw === "" ? 0 : parseFloat(raw);
+  if(isNaN(v) || v < 0){ toast("限额需为非负数字，留空或 0 表示关闭", "err"); return; }
+  riskLimit = v;
+  saveRiskCfg();
+  renderRiskLimit();
+  toast(v > 0 ? `已设置单日亏损限额 ${fmt(v, 2)} USDT` : "已关闭单日亏损限额提醒", "ok");
+});
 
 // 导出盈亏分析 CSV：当前时间筛选下的逐笔平仓明细（非聚合），便于外部复核
 const FSTAT_REASON_TEXT = { tp: "止盈", sl: "止损", liq: "强平", manual: "手动", pclose: "部分平仓", rev: "反手", trail: "追踪止损" };
@@ -4895,6 +4977,7 @@ document.getElementById("btnAddFunds").addEventListener("click", ()=>{
 window.addEventListener("storage", e=>{
   if(e.key === STORE_KEY || e.key === DEP_KEY){ load(); renderAll(); }
   else if(e.key === FSTAT_KEY){ loadFstatFilter(); renderFutStats(); }   // 另一标签页改了盈亏筛选
+  else if(e.key === RISKCFG_KEY){ loadRiskCfg(); renderRiskLimit(); }    // 另一标签页改了风险限额
 });
 
 document.getElementById("btnReset").addEventListener("click", ()=>{
@@ -4907,10 +4990,10 @@ document.getElementById("btnReset").addEventListener("click", ()=>{
 });
 
 /* ---------- 数据备份 / 恢复 ---------- */
-// 备份：三个 localStorage 键原样打包成 JSON 文件下载（主存档 / 净投入 / 盈亏筛选偏好）
+// 备份：全部 localStorage 键原样打包成 JSON 文件下载（主存档 / 净投入 / 盈亏筛选偏好 / 风险限额设置）
 document.getElementById("btnBackup").addEventListener("click", ()=>{
   const data = {};
-  for(const k of [STORE_KEY, DEP_KEY, FSTAT_KEY]){
+  for(const k of [STORE_KEY, DEP_KEY, FSTAT_KEY, RISKCFG_KEY]){
     const v = localStorage.getItem(k);
     if(v !== null) data[k] = v;
   }
@@ -4946,12 +5029,13 @@ document.getElementById("restoreFile").addEventListener("change", function(){
       }
       JSON.parse(obj.data[STORE_KEY]);   // 主存档必须是合法 JSON
       if(!confirm(`恢复备份（导出于 ${obj.exportedAt || "未知时间"}）将覆盖当前全部数据，确定继续？`)) return;
-      for(const k of [STORE_KEY, DEP_KEY, FSTAT_KEY]){
+      for(const k of [STORE_KEY, DEP_KEY, FSTAT_KEY, RISKCFG_KEY]){
         if(typeof obj.data[k] === "string") localStorage.setItem(k, obj.data[k]);
         else localStorage.removeItem(k);
       }
       load();               // 同页重读存档（storage 事件只跨标签页触发）
       loadFstatFilter();
+      loadRiskCfg();
       renderAll();
       toast("备份已恢复", "ok");
     }catch(err){
