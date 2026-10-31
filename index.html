@@ -321,6 +321,9 @@ tbody tr:hover{background:var(--panel2)}
           <button data-ind="dma">DMA</button>
           <button data-ind="sar">SAR</button>
           <button data-ind="expma">EXPMA</button>
+          <button data-ind="mavol">MAVOL</button>
+          <button data-ind="emv">EMV</button>
+          <button data-ind="cr">CR</button>
         </div>
       </div>
       <div class="chart-box"><canvas id="klineCanvas"></canvas></div>
@@ -799,7 +802,7 @@ tbody tr:hover{background:var(--panel2)}
   </section>
 
   <div class="foot">
-    模拟交易所 · Paper Exchange — 仅用于界面与流程演示 · build <span id="buildVer">20261031-44</span><br>
+    模拟交易所 · Paper Exchange — 仅用于界面与流程演示 · build <span id="buildVer">20261031-45</span><br>
     不构成投资建议，不涉及真实资金、真实交易、真实收益
   </div>
 </div>
@@ -1179,6 +1182,9 @@ let kShowROC  = false;
 let kShowDMA  = false;
 let kShowSAR  = false;   // SAR 叠加在主图，不占子图
 let kShowEXPMA = false;  // EXPMA 快/慢线叠加在主图，不占子图
+let kShowMAVOL = false;  // 成交量均线叠加在 VOL 子图，不新增子图
+let kShowEMV = false;    // EMV 子图
+let kShowCR  = false;    // CR 子图
 let kInd = null;       // 全量指标缓存 {dif, dea, bar, r6, r12, r24, boll, kdj}，按 klines 绝对下标对齐
 let kReqSeq = 0;       // 请求序号：并发时只接受最后一次发起的结果
 
@@ -1514,6 +1520,56 @@ function dmaOf(kl, s = 10, l = 50, m = 10){
   return { dma, signal };
 }
 
+// MAVOL（成交量均线，5·10）：直接对成交量数组做 MA，画在 VOL 子图内叠加
+function mavolOf(kl, ns = [5, 10]){
+  const vols = kl.map(k => k.v);
+  return ns.map(n => ma(vols, n));
+}
+
+// EMV（简易波动指标，信号线 9）：((今中价 − 昨中价) × 今振幅) / 成交量
+// 中价 = (高 + 低) / 2；数值为正表示价涨量缩（上行省力），为负表示价跌量增（下行费力）
+function emvOf(kl, m = 9){
+  const len = kl.length;
+  const emv = new Array(len).fill(null);
+  for(let i = 1; i < len; i++){
+    const mid = (kl[i].h + kl[i].l) / 2;
+    const prevMid = (kl[i-1].h + kl[i-1].l) / 2;
+    const amp = kl[i].h - kl[i].l;
+    const vol = kl[i].v;
+    emv[i] = vol === 0 ? 0 : (mid - prevMid) * amp / vol;
+  }
+  const signal = new Array(len).fill(null);
+  for(let i = 1 + m - 1; i < len; i++){   // EMV 从第 2 根起有效，均线从有效段算
+    let s = 0;
+    for(let j = i - m + 1; j <= i; j++) s += emv[j];
+    signal[i] = s / m;
+  }
+  return { emv, signal };
+}
+
+// CR（能量指标，参数 5·10·20）：(今高 − 昨中价) / (昨中价 − 今低) × 100
+// 昨中价 = 前一根 (高 + 低) / 2；再取 CR 的 5/10/20 日均线作为三条参考线
+// 分母趋零时 CR 会爆到百万级把整条线压平，这里按 ±400 截断（常规区间不受影响）
+function crOf(kl, ns = [5, 10, 20]){
+  const len = kl.length;
+  const cr = new Array(len).fill(null);
+  for(let i = 1; i < len; i++){
+    const mid = (kl[i-1].h + kl[i-1].l) / 2;
+    const den = mid - kl[i].l;
+    const raw = den === 0 ? 0 : (kl[i].h - mid) / den * 100;
+    cr[i] = Math.max(-400, Math.min(400, raw));
+  }
+  return { cr, ma: ns.map(n => {
+    const out = new Array(len).fill(null);
+    for(let i = n; i < len; i++){   // CR 从第 2 根起有效，均线窗口整体后移一根
+      let s = 0;
+      for(let j = i - n + 1; j <= i; j++) s += cr[j];
+      out[i] = s / n;
+    }
+    return out;
+  }) };
+}
+
 // SAR（抛物线转向，步长 0.02·上限 0.2）：主图叠加点；bull=true 点在 K 线下方（多头），反之上方（空头）
 // Wilder 原版：SAR = 前SAR + AF·(EP − 前SAR)，创新高/低 AF 累加；价格穿越 SAR 即反转，AF 归零重来
 function sarOf(kl, af0 = 0.02, afStep = 0.02, afMax = 0.2){
@@ -1623,7 +1679,7 @@ function drawKline(){
     ["obv", kShowOBV], ["wr", kShowWR], ["dmi", kShowDMI],
     ["cci", kShowCCI], ["atr", kShowATR], ["mtm", kShowMTM],
     ["trix", kShowTRIX], ["bias", kShowBIAS], ["psy", kShowPSY],
-    ["roc", kShowROC], ["dma", kShowDMA],
+    ["roc", kShowROC], ["dma", kShowDMA], ["emv", kShowEMV], ["cr", kShowCR],
   ];
   const subCount = subPanels.filter(p => p[1]).length;
   // 子图超过 1 个时动态加高图表容器，主图不被压扁（每个额外子图 +110px）
@@ -1679,7 +1735,7 @@ function drawKline(){
   const allCloses = klines.map(k => k.c);
   kInd = null;
   if(kShowMACD || kShowRSI || kShowBOLL || kShowKDJ || kShowOBV || kShowWR || kShowDMI || kShowCCI || kShowATR || kShowMTM
-     || kShowTRIX || kShowBIAS || kShowPSY || kShowROC || kShowDMA || kShowSAR || kShowEXPMA){
+     || kShowTRIX || kShowBIAS || kShowPSY || kShowROC || kShowDMA || kShowSAR || kShowEXPMA || kShowMAVOL || kShowEMV || kShowCR){
     kInd = {};
     if(kShowMACD) Object.assign(kInd, macdOf(allCloses));
     if(kShowRSI){ kInd.r6 = rsiOf(allCloses, 6); kInd.r12 = rsiOf(allCloses, 12); kInd.r24 = rsiOf(allCloses, 24); }
@@ -1698,6 +1754,9 @@ function drawKline(){
     if(kShowDMA)  kInd.dma  = dmaOf(klines);
     if(kShowSAR)  kInd.sar  = sarOf(klines);
     if(kShowEXPMA) kInd.expma = { f: ema(allCloses, 12), s: ema(allCloses, 50) };   // EXPMA 即 EMA：快 12 / 慢 50
+    if(kShowMAVOL) kInd.mavol = mavolOf(klines);
+    if(kShowEMV)   kInd.emv   = emvOf(klines);
+    if(kShowCR)    kInd.cr    = crOf(klines);
   }
 
   let hi = -Infinity, lo = Infinity, vmax = 0;
@@ -1705,6 +1764,16 @@ function drawKline(){
     if(k.h > hi) hi = k.h;
     if(k.l < lo) lo = k.l;
     if(k.v > vmax) vmax = k.v;
+  }
+  // MAVOL 开着时把均量纳入量程，避免均线冲出成交量面板
+  if(kShowMAVOL && kInd && kInd.mavol){
+    for(let i = 0; i < vis.length; i++){
+      const idx = start + i;
+      for(const arr of kInd.mavol){
+        const v = arr[idx];
+        if(v !== null && v > vmax) vmax = v;
+      }
+    }
   }
   // BOLL 开着时把上下轨纳入价格范围，轨道不贴边飞出
   if(kShowBOLL && kInd && kInd.boll){
@@ -1790,6 +1859,24 @@ function drawKline(){
     g.fillRect(x - bodyW/2, volTop + (volH - vh), bodyW, vh);
     g.globalAlpha = 1;
   });
+
+  // MAVOL 成交量均线：5 日均量（黄）/ 10 日均量（紫），直接叠在 VOL 面板里
+  if(kShowMAVOL && kInd && kInd.mavol){
+    const vyOf = v => volTop + volH - (vmax > 0 ? (v / vmax) * volH : 0);
+    [[kInd.mavol[0], "#f0b90b"], [kInd.mavol[1], "#c084fc"]].forEach(([arr, color]) => {
+      g.strokeStyle = color; g.lineWidth = 1.2; g.beginPath();
+      let started = false;
+      vis.forEach((_, i) => {
+        const v = arr[start + i];
+        if(v === null) return;
+        const x = padL + slot * (i + 0.5), y = vyOf(v);
+        if(!started){ g.moveTo(x, y); started = true; } else g.lineTo(x, y);
+      });
+      g.stroke();
+    });
+    g.fillStyle = "#848e9c"; g.textAlign = "left"; g.textBaseline = "middle";
+    g.fillText("VOL·均量5·10", padL + 4, volTop + 21);
+  }
 
   // 均线 MA7（黄）/ MA25（紫）：在全量数据上算，平移到历史区间也不断线
   [[ma(allCloses, 7), "#f0b90b"], [ma(allCloses, 25), "#c084fc"]].forEach(([arr, color]) => {
@@ -2179,6 +2266,19 @@ function drawKline(){
       series: [{ arr: kInd.dma.dma, color: "#f0b90b" }, { arr: kInd.dma.signal, color: "#c084fc" }] });
   }
 
+  // EMV 子图：EMV（黄）+ 9 期均线（紫），零轴上方 = 上行省力
+  if(kShowEMV && kInd && kInd.emv){
+    drawLineSub(g, { top: subTops.emv, h: subH, label: "EMV 9", zero: true, padL, cw, slot, start, vis,
+      series: [{ arr: kInd.emv.emv, color: "#f0b90b" }, { arr: kInd.emv.signal, color: "#c084fc" }] });
+  }
+
+  // CR 子图：CR（黄）+ 5/10/20 日均线（紫/蓝）
+  if(kShowCR && kInd && kInd.cr){
+    drawLineSub(g, { top: subTops.cr, h: subH, label: "CR 5·10·20", padL, cw, slot, start, vis,
+      series: [{ arr: kInd.cr.cr, color: "#f0b90b" }, { arr: kInd.cr.ma[0], color: "#c084fc" },
+               { arr: kInd.cr.ma[1], color: "#5b8af0" }, { arr: kInd.cr.ma[2], color: "#0ecb81" }] });
+  }
+
   // 最新价虚线（只在窗口包含最新一根时画）
   if(start + vis.length >= klines.length){
     const yLast = yOf(klines[klines.length - 1].c);
@@ -2347,6 +2447,21 @@ function drawHover(idx, my){
   if(kInd && kInd.expma && kInd.expma.f[idx] !== null){
     rows.push(["EXP快", fmtPx(kInd.expma.f[idx]), "#f0b90b"]);
     rows.push(["EXP慢", fmtPx(kInd.expma.s[idx]), "#c084fc"]);
+  }
+  if(kInd && kInd.mavol && kInd.mavol[0][idx] !== null){
+    rows.push(["量5", fmt(kInd.mavol[0][idx], 2), "#f0b90b"]);
+    if(kInd.mavol[1][idx] !== null) rows.push(["量10", fmt(kInd.mavol[1][idx], 2), "#c084fc"]);
+  }
+  if(kInd && kInd.emv && kInd.emv.emv[idx] !== null){
+    const ev = kInd.emv.emv[idx];
+    rows.push(["EMV", fmt(ev, 2), ev >= 0 ? "#0ecb81" : "#f6465d"]);
+    if(kInd.emv.signal[idx] !== null) rows.push(["EMV均", fmt(kInd.emv.signal[idx], 2), "#c084fc"]);
+  }
+  if(kInd && kInd.cr && kInd.cr.cr[idx] !== null){
+    rows.push(["CR", fmt(kInd.cr.cr[idx], 1), "#f0b90b"]);
+    if(kInd.cr.ma[0][idx] !== null) rows.push(["CR均5", fmt(kInd.cr.ma[0][idx], 1), "#c084fc"]);
+    if(kInd.cr.ma[1][idx] !== null) rows.push(["CR均10", fmt(kInd.cr.ma[1][idx], 1), "#5b8af0"]);
+    if(kInd.cr.ma[2][idx] !== null) rows.push(["CR均20", fmt(kInd.cr.ma[2][idx], 1), "#0ecb81"]);
   }
   const bw = 152, bh = rows.length * 17 + 16;
   let bx = x + 14;
@@ -4968,6 +5083,9 @@ document.getElementById("indBtns").addEventListener("click", e=>{
   else if(ind === "dma")  kShowDMA  = !kShowDMA;
   else if(ind === "sar")  kShowSAR  = !kShowSAR;
   else if(ind === "expma") kShowEXPMA = !kShowEXPMA;
+  else if(ind === "mavol") kShowMAVOL = !kShowMAVOL;
+  else if(ind === "emv")   kShowEMV   = !kShowEMV;
+  else if(ind === "cr")    kShowCR    = !kShowCR;
   else return;
   b.classList.toggle("on");
   drawKline();
