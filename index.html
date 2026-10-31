@@ -201,6 +201,18 @@ tbody tr:hover{background:var(--panel2)}
 .wr{display:inline-block;vertical-align:middle;width:44px;height:5px;background:var(--panel);border:1px solid var(--border);border-radius:3px;overflow:hidden;margin-right:6px}
 .wr i{display:block;height:100%;border-radius:3px}
 
+/* 价格警报：添加表单 + 触发提示条 */
+.alert-form{display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end;margin-bottom:12px}
+.alert-form .field{margin-bottom:0;flex:1;min-width:120px}
+.alert-form .row select{
+  flex:1;width:100%;background:none;border:none;color:var(--text);padding:10px 12px;outline:none;
+  appearance:none;-webkit-appearance:none;cursor:pointer;
+}
+.alert-form .row select option{background:var(--panel2);color:var(--text)}
+#alertBanner{flex-direction:column;align-items:stretch;gap:4px}
+#alertBanner .arow{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+#alertBanner .arow b{flex:none}
+
 /* 账户风险日限额警示条：黄 = 亏到限额 60%（接近）、红 = 达到限额 */
 #riskLimitBanner{border-radius:var(--r);padding:10px 12px;margin:0 0 10px;font-size:12.5px;line-height:1.8}
 #riskLimitBanner.warn{border:1px solid var(--yellow);background:rgba(240,185,11,.08)}
@@ -233,6 +245,9 @@ tbody tr:hover{background:var(--panel2)}
   <b>纸面模拟</b> 本页不涉及真实资金、真实下单、真实账户。行情优先取 Binance 公开接口，取不到则切换为离线模拟行情（价格会小幅波动）。
 </div>
 
+<!-- 价格警报触发提示条：有警报触发时逐条展示，「知道了」逐条关闭 -->
+<div class="notice" id="alertBanner" style="display:none"></div>
+
 <div class="wrap">
 
   <!-- 行情 -->
@@ -247,6 +262,29 @@ tbody tr:hover{background:var(--panel2)}
       <table>
         <thead><tr><th>币种</th><th>最新价</th><th>24h 涨跌</th><th>24h 高 / 低</th><th>操作</th></tr></thead>
         <tbody id="marketBody"></tbody>
+      </table>
+    </div>
+    <!-- 价格警报：行情每次刷新（约 15 秒）后自动检查，触发即移除并弹提醒 -->
+    <div class="card" style="margin-top:12px">
+      <h3>价格警报 <span class="mid" style="font-weight:400;font-size:11px">行情刷新后自动检查 · 触发后移除并提醒 · 最多 20 条</span></h3>
+      <div class="alert-form">
+        <div class="field">
+          <label>币种</label>
+          <div class="row"><select id="alertCoin"></select></div>
+        </div>
+        <div class="field">
+          <label>条件</label>
+          <div class="row"><select id="alertCond"><option value="above">高于</option><option value="below">低于</option></select></div>
+        </div>
+        <div class="field" style="flex:1.4">
+          <label>目标价（USDT）</label>
+          <div class="row"><input id="alertPrice" type="number" min="0" step="any" placeholder="0.00"></div>
+        </div>
+        <button class="trade-btn" id="btnAddAlert" style="height:40px;padding:0 16px">添加警报</button>
+      </div>
+      <table>
+        <thead><tr><th>币种</th><th>条件</th><th>目标价</th><th>当前价</th><th>距离</th><th>操作</th></tr></thead>
+        <tbody id="alertBody"></tbody>
       </table>
     </div>
   </section>
@@ -760,7 +798,7 @@ tbody tr:hover{background:var(--panel2)}
   </section>
 
   <div class="foot">
-    模拟交易所 · Paper Exchange — 仅用于界面与流程演示 · build <span id="buildVer">20261031-42</span><br>
+    模拟交易所 · Paper Exchange — 仅用于界面与流程演示 · build <span id="buildVer">20261031-43</span><br>
     不构成投资建议，不涉及真实资金、真实交易、真实收益
   </div>
 </div>
@@ -1088,6 +1126,7 @@ async function fetchPrices(){
       failCount = 0;
       renderAll();
       checkOpenOrders();   // 价格更新后检查限价单是否触价
+      checkPriceAlerts();  // 价格更新后检查价格警报是否触发
       return;
     }catch(e){
       // 当前源不可用，换下一个
@@ -1111,6 +1150,7 @@ async function fetchPrices(){
   priceSource = "sim";
   renderAll();
   checkOpenOrders();
+  checkPriceAlerts();   // 离线模拟行情同样检查价格警报
 }
 
 /* ---------- K 线 ---------- */
@@ -2432,6 +2472,7 @@ function renderMarket(){
       <td><button class="trade-btn" data-goto-trade="${c.base}">交易</button></td>
     </tr>`;
   }).join("");
+  renderPriceAlerts();   // 警报列表跟随行情刷新当前价/距离列
 }
 
 /* ---------- 渲染：交易 ---------- */
@@ -5039,6 +5080,7 @@ window.addEventListener("storage", e=>{
   if(e.key === STORE_KEY || e.key === DEP_KEY){ load(); renderAll(); }
   else if(e.key === FSTAT_KEY){ loadFstatFilter(); renderFutStats(); }   // 另一标签页改了盈亏筛选
   else if(e.key === RISKCFG_KEY){ loadRiskCfg(); renderRiskLimit(); }    // 另一标签页改了风险限额
+  else if(e.key === ALERTS_KEY){ loadAlerts(); renderPriceAlerts(); }    // 另一标签页改了价格警报
 });
 
 document.getElementById("btnReset").addEventListener("click", ()=>{
@@ -5051,10 +5093,10 @@ document.getElementById("btnReset").addEventListener("click", ()=>{
 });
 
 /* ---------- 数据备份 / 恢复 ---------- */
-// 备份：全部 localStorage 键原样打包成 JSON 文件下载（主存档 / 净投入 / 盈亏筛选偏好 / 风险限额设置）
+// 备份：全部 localStorage 键原样打包成 JSON 文件下载（主存档 / 净投入 / 盈亏筛选偏好 / 风险限额设置 / 价格警报）
 document.getElementById("btnBackup").addEventListener("click", ()=>{
   const data = {};
-  for(const k of [STORE_KEY, DEP_KEY, FSTAT_KEY, RISKCFG_KEY]){
+  for(const k of [STORE_KEY, DEP_KEY, FSTAT_KEY, RISKCFG_KEY, ALERTS_KEY]){
     const v = localStorage.getItem(k);
     if(v !== null) data[k] = v;
   }
@@ -5090,13 +5132,14 @@ document.getElementById("restoreFile").addEventListener("change", function(){
       }
       JSON.parse(obj.data[STORE_KEY]);   // 主存档必须是合法 JSON
       if(!confirm(`恢复备份（导出于 ${obj.exportedAt || "未知时间"}）将覆盖当前全部数据，确定继续？`)) return;
-      for(const k of [STORE_KEY, DEP_KEY, FSTAT_KEY, RISKCFG_KEY]){
+      for(const k of [STORE_KEY, DEP_KEY, FSTAT_KEY, RISKCFG_KEY, ALERTS_KEY]){
         if(typeof obj.data[k] === "string") localStorage.setItem(k, obj.data[k]);
         else localStorage.removeItem(k);
       }
       load();               // 同页重读存档（storage 事件只跨标签页触发）
       loadFstatFilter();
       loadRiskCfg();
+      loadAlerts();
       renderAll();
       toast("备份已恢复", "ok");
     }catch(err){
@@ -5105,6 +5148,115 @@ document.getElementById("restoreFile").addEventListener("change", function(){
   };
   reader.readAsText(file);
 });
+
+/* ---------- 价格警报（build 43） ---------- */
+const ALERTS_KEY = "paper_exchange_alerts_v1";   // 警报列表独立存档键（用户偏好，不进主存档，防旧标签页覆盖）
+
+let priceAlerts = [];   // [{ id, base, cond:"above"/"below", price }]
+
+function loadAlerts(){
+  try{
+    const arr = JSON.parse(localStorage.getItem(ALERTS_KEY) || "null");
+    if(Array.isArray(arr)) priceAlerts = arr.filter(a =>
+      a && typeof a.base === "string" && (a.cond === "above" || a.cond === "below")
+        && isFinite(a.price) && a.price > 0 && COINS.some(c => c.base === a.base));
+  }catch(e){ priceAlerts = []; }
+}
+function saveAlerts(){
+  try{ localStorage.setItem(ALERTS_KEY, JSON.stringify(priceAlerts)); }catch(e){}
+}
+loadAlerts();
+
+// 币种下拉选项
+document.getElementById("alertCoin").innerHTML =
+  COINS.map(c => `<option value="${c.base}">${c.base} / ${c.quote}</option>`).join("");
+
+// 添加警报：校验目标价、查重、上限 20 条
+document.getElementById("btnAddAlert").addEventListener("click", ()=>{
+  const base = document.getElementById("alertCoin").value;
+  const cond = document.getElementById("alertCond").value;
+  const price = parseFloat(document.getElementById("alertPrice").value);
+  if(!isFinite(price) || price <= 0){ toast("请输入大于 0 的目标价", "err"); return; }
+  if(priceAlerts.some(a => a.base === base && a.cond === cond && Math.abs(a.price - price) < 1e-9)){
+    toast("已存在相同的警报条件", "err"); return;
+  }
+  if(priceAlerts.length >= 20){ toast("警报最多 20 条，请先删除不用的", "err"); return; }
+  priceAlerts.push({ id: Date.now().toString(36) + Math.random().toString(36).slice(2, 6), base, cond, price });
+  saveAlerts();
+  document.getElementById("alertPrice").value = "";
+  renderPriceAlerts();
+  toast(`已添加：${base} ${cond === "above" ? "高于" : "低于"} ${fmtPx(price)}`, "ok");
+});
+
+// 删除警报（事件委托）
+document.getElementById("alertBody").addEventListener("click", e=>{
+  const b = e.target.closest("[data-adel]");
+  if(!b) return;
+  priceAlerts = priceAlerts.filter(a => a.id !== b.dataset.adel);
+  saveAlerts();
+  renderPriceAlerts();
+});
+
+function renderPriceAlerts(){
+  const tb = document.getElementById("alertBody");
+  if(!tb) return;
+  if(!priceAlerts.length){
+    tb.innerHTML = `<tr><td colspan="6" class="empty" style="text-align:center">暂无警报，添加后每次行情刷新（约 15 秒）自动检查</td></tr>`;
+    return;
+  }
+  tb.innerHTML = priceAlerts.map(a=>{
+    const px = priceOf(a.base);
+    const dist = a.price ? (px / a.price - 1) * 100 : 0;   // 当前价相对目标价偏离
+    return `<tr>
+      <td>${a.base}</td>
+      <td class="mid">${a.cond === "above" ? "高于" : "低于"}</td>
+      <td>${fmtPx(a.price)}</td>
+      <td>${fmtPx(px)}</td>
+      <td class="${dist > 0 ? "up" : dist < 0 ? "down" : "mid"}">${(dist >= 0 ? "+" : "") + fmt(dist, 2)}%</td>
+      <td><button class="trade-btn" data-adel="${a.id}">删除</button></td>
+    </tr>`;
+  }).join("");
+}
+
+// 触发提示条：每条一行，「知道了」逐条关闭
+function alertBannerRow(a, px){
+  const banner = document.getElementById("alertBanner");
+  const d = new Date();
+  const p = n => String(n).padStart(2, "0");
+  const row = document.createElement("div");
+  row.className = "arow";
+  row.innerHTML = `<b>价格警报</b>
+    <span>${a.base}/USDT 已${a.cond === "above" ? "高于" : "低于"} ${fmtPx(a.price)}（当前 ${fmtPx(px)}）</span>
+    <span class="mid">${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}</span>
+    <button class="trade-btn" style="margin-left:auto" data-aknow="1">知道了</button>`;
+  banner.appendChild(row);
+  banner.style.display = "flex";
+}
+document.getElementById("alertBanner").addEventListener("click", e=>{
+  const b = e.target.closest("[data-aknow]");
+  if(!b) return;
+  b.closest(".arow").remove();
+  const banner = document.getElementById("alertBanner");
+  if(!banner.querySelector(".arow")) banner.style.display = "none";
+});
+
+// 行情刷新后检查：命中即移除该警报 + toast 汇总 + 提示条逐条展示
+function checkPriceAlerts(){
+  if(!priceAlerts.length) return;
+  const hit = [];
+  priceAlerts = priceAlerts.filter(a=>{
+    const px = priceOf(a.base);
+    if(!px) return true;
+    if(a.cond === "above" ? px >= a.price : px <= a.price){ hit.push([a, px]); return false; }
+    return true;
+  });
+  if(!hit.length) return;
+  saveAlerts();
+  for(const [a, px] of hit) alertBannerRow(a, px);
+  toast("价格警报：" + hit.map(([a, px]) =>
+    `${a.base} 已${a.cond === "above" ? "高于" : "低于"} ${fmtPx(a.price)}（当前 ${fmtPx(px)}）`).join("；"), "ok");
+  renderPriceAlerts();
+}
 
 /* ---------- 启动 ---------- */
 load();
